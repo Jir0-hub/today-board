@@ -1,0 +1,21 @@
+# 内部作業用ファイル（公開リポジトリに含めないため必ず除外すること）
+CLAUDE.md
+.claude/
+.logs/
+docs/internal/
+
+# ツール・OS・エディタ
+.playwright-mcp/
+Thumbs.db
+.DS_Store
+desktop.ini
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+
+# ログ・一時ファイル
+*.log
+*.tmp

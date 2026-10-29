@@ -1,0 +1,219 @@
+  :root {
+    --bg: #f5f6f4;
+    --surface: #ffffff;
+    --ink: #22262a;
+    --ink-2: #5a6068;
+    --ink-3: #8b929b;
+    --line: #e2e5e1;
+    --rail: #3a5480;
+    --done: #2e6e4e;
+    --done-bg: #e4f0e9;
+    --active: #3a5480;
+    --active-bg: #e7ecf4;
+    --crit: #c2402a;
+    --crit-bg: #fbeae6;
+    --hold: #9a7b2d;
+    --hold-bg: #f5eeda;
+  }
+  /* ダークテーマ: jir0.com のデザイントークンに準拠（#111地・#252525カード・紫アクセント・白10%境界） */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111111; --surface: #252525; --ink: #e7e7e7; --ink-2: #a3a3a3; --ink-3: #7a7a7a;
+      --line: rgba(255,255,255,.1); --rail: #9d7ad9;
+      --done: #3fd0a4; --done-bg: rgba(63,208,164,.12); --active: #9d7ad9; --active-bg: rgba(134,98,196,.18);
+      --crit: #ef6b5e; --crit-bg: rgba(239,107,94,.14); --hold: #cbaa58; --hold-bg: rgba(203,170,88,.14);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111111; --surface: #252525; --ink: #e7e7e7; --ink-2: #a3a3a3; --ink-3: #7a7a7a;
+    --line: rgba(255,255,255,.1); --rail: #9d7ad9;
+    --done: #3fd0a4; --done-bg: rgba(63,208,164,.12); --active: #9d7ad9; --active-bg: rgba(134,98,196,.18);
+    --crit: #ef6b5e; --crit-bg: rgba(239,107,94,.14); --hold: #cbaa58; --hold-bg: rgba(203,170,88,.14);
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f6f4; --surface: #ffffff; --ink: #22262a; --ink-2: #5a6068; --ink-3: #8b929b;
+    --line: #e2e5e1; --rail: #3a5480;
+    --done: #2e6e4e; --done-bg: #e4f0e9; --active: #3a5480; --active-bg: #e7ecf4;
+    --crit: #c2402a; --crit-bg: #fbeae6; --hold: #9a7b2d; --hold-bg: #f5eeda;
+  }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic UI", "Yu Gothic", Meiryo, system-ui, sans-serif;
+    line-height: 1.55;
+    margin: 0;
+    padding: 20px 16px 40px;
+  }
+  .board { max-width: 640px; margin: 0 auto; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-size: 1.3rem; font-weight: 700; margin: 0; letter-spacing: .02em; }
+  h1 img { width: 32px; height: 32px; vertical-align: -8px; margin-right: 4px; }
+  .date { font-size: .8rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .updated { font-size: .72rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+  .progress { margin: 14px 0 22px; }
+  .progress-label { display: flex; justify-content: space-between; font-size: .75rem; color: var(--ink-2); margin-bottom: 5px; font-variant-numeric: tabular-nums; }
+  .bar { height: 7px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; width: 0; background: var(--done); border-radius: 4px; transition: width .4s; }
+  /* ダーク時の進捗バーは jir0.com のパープルグラデーション */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .bar-fill { background: linear-gradient(90deg, #8662c4, #9d7ad9); }
+  }
+  :root[data-theme="dark"] .bar-fill { background: linear-gradient(90deg, #8662c4, #9d7ad9); }
+
+  .section-label { font-size: .7rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 22px 0 10px; }
+
+  .item {
+    display: grid; grid-template-columns: 52px 1fr; gap: 0 12px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 14px; margin-bottom: 8px;
+  }
+  .item.crit { border-left: 4px solid var(--crit); padding-left: 11px; }
+  .item.done-item { opacity: .62; }
+  .time {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: .85rem; font-weight: 600; color: var(--rail); padding-top: 2px;
+  }
+  .item.crit .time { color: var(--crit); }
+  .task-title { font-size: .9rem; font-weight: 600; margin: 0; }
+  .task-note { font-size: .76rem; color: var(--ink-2); margin: 3px 0 0; }
+  .chips { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .chip {
+    display: inline-block; font-size: .68rem; font-weight: 700;
+    padding: 1px 8px; border-radius: 999px; letter-spacing: .04em;
+  }
+  .chip.done { background: var(--done-bg); color: var(--done); }
+  .chip.active { background: var(--active-bg); color: var(--active); }
+  .chip.pending { background: var(--line); color: var(--ink-2); }
+  .chip.crit { background: var(--crit-bg); color: var(--crit); }
+  .chip.hold { background: var(--hold-bg); color: var(--hold); }
+
+  .flat { grid-template-columns: 1fr; }
+  .strike { text-decoration: line-through; }
+
+  .item.next-up:not(.crit) { border-color: var(--active); box-shadow: 0 0 0 1px var(--active); }
+
+  .updated button {
+    font: inherit; font-size: .7rem; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 5px;
+    padding: 1px 8px; margin-left: 8px; cursor: pointer;
+  }
+  .updated button:hover { border-color: var(--ink-3); }
+
+  #settings-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-top: 10px; font-size: .78rem; }
+  .set-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 6px 0; }
+  .set-row > span:first-child { color: var(--ink-2); }
+  .set-row button { font: inherit; font-size: .72rem; color: var(--ink-2); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 8px; cursor: pointer; margin-left: 4px; }
+  .set-row button.on, .set-row button.active { color: var(--active); border-color: var(--active); font-weight: 700; }
+  .swatch { width: 18px; height: 18px; border-radius: 50%; border: 2px solid transparent; padding: 0; vertical-align: middle; }
+  .swatch.active { border-color: var(--ink); }
+  .set-note { font-size: .68rem; color: var(--ink-3); margin-top: 8px; line-height: 1.5; }
+  #toast-area { position: fixed; right: 14px; bottom: 14px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: 320px; }
+  .toast { background: var(--surface); border: 1px solid var(--crit); border-left: 4px solid var(--crit); color: var(--ink); border-radius: 8px; padding: 10px 14px; font-size: .85rem; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.18); cursor: pointer; }
+  .time.overridden::after { content: " ✎"; font-size: .7em; color: var(--hold); }
+  .time input { font: inherit; font-size: .8rem; width: 82px; border: 1px solid var(--active); border-radius: 4px; background: var(--surface); color: var(--ink); }
+  .hide-btn { float: right; font-size: .72rem; line-height: 1.4; color: var(--ink-3); background: none; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; cursor: pointer; margin-left: 8px; }
+  .hide-btn:hover { color: var(--crit); border-color: var(--crit); }
+
+  footer { margin-top: 26px; font-size: .7rem; color: var(--ink-3); }
+
+  /* 日付ホバーのカレンダーポップアップ */
+  .date { position: relative; display: inline-block; cursor: default; }
+  .cal-pop {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 50;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 10px 12px; width: 224px; display: none;
+  }
+  .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .cal-title { font-size: .8rem; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .cal-nav {
+    background: none; border: 1px solid var(--line); border-radius: 6px;
+    color: var(--ink-2); font-size: .7rem; padding: 1px 7px; cursor: pointer;
+  }
+  .cal-nav:hover { border-color: var(--ink-3); }
+  .cal-pop table { border-collapse: collapse; width: 100%; }
+  .cal-pop th { font-size: .62rem; font-weight: 700; color: var(--ink-3); padding: 2px 0; }
+  .cal-pop td {
+    font-size: .72rem; text-align: center; padding: 3px 0; color: var(--ink);
+    font-variant-numeric: tabular-nums; border-radius: 6px;
+  }
+  .cal-pop th.cal-sun, .cal-pop td.cal-sun { color: var(--crit); }
+  .cal-pop th.cal-sat, .cal-pop td.cal-sat { color: var(--rail); }
+  .cal-pop td.cal-today { background: var(--active); color: #fff; font-weight: 700; }
+
+  /* 計画紐づけチップ（自動収集カードの「／計画: ○○」を board.js がチップ化） */
+  .chip.plan {
+    background: transparent; border: 1px solid var(--rail); color: var(--rail);
+    font-weight: 600;
+  }
+
+  /* 計画リンクの同色枠（手書き計画タスク×紐づくセッションカードを同じ枠色に） */
+  .item.plan-linked { border-width: 2px; padding: 9px 13px; }
+  .item.crit.plan-linked { border-left-width: 4px; padding-left: 10px; }
+
+  /* D&D移動とセクション表示順（ブラウザ内のみ・localStorage保存） */
+  .item.draggable { cursor: grab; }
+  .item.dragging { opacity: .45; }
+  .item.drop-before { box-shadow: 0 -3px 0 0 var(--rail); }
+  .section-label.drop-hint, .sec-drop-tail.drop-hint { box-shadow: 0 3px 0 0 var(--rail); }
+  .sec-drop-tail { height: 8px; }
+  .order-ctl { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
+  .order-item { font-size: .74rem; color: var(--ink-2); }
+  .order-item button {
+    font-size: .7rem; padding: 0 6px; background: none;
+    border: 1px solid var(--line); border-radius: 6px; color: var(--ink-2); cursor: pointer;
+  }
+  .order-item button:disabled { opacity: .35; cursor: default; }
+
+  /* 済タスクを隠す（⚙トグル・localStorage・ブラウザ内のみ・既定 OFF・2026-08-07 新設） */
+  /* 対象は手書きセクションだけ。自動収集カード（data-sid）は既存の × 非表示が担当する。
+     done-item は「済チップを唯一の真実」とする自動整合（board.js 冒頭の無名IIFE と
+     Deck の normalize_done_marks）が付け外しし、どちらも data-sid をスキップするので、
+     done-item は手書き item にしか付かない。:not([data-sid]) は同じ限定を選択子でも明示する二重防御。
+     インライン style ではなく CSS 規則に置く理由: applyHidden() が .item[data-sid] の
+     style.display を握っているため、同じプロパティを2つの関数が書く形を作らない。
+     display:none は box を作らないだけで DOM からは消えないので、進捗の再計算（recalc）・
+     D&D の並び・Deck の正本整合はいずれも従来どおり動く。 */
+  :root.tb-hide-done .item.done-item:not([data-sid]) { display: none; }
+  /* パネルを開かなくてもフィルタが効いていると分かるようにする */
+  :root.tb-hide-done #settings-btn { color: var(--active); border-color: var(--active); font-weight: 700; }
+
+  /* 済タスクを1件ずつ隠す（× ボタン・localStorage・ブラウザ内のみ・日付スコープ・2026-08-08 新設） */
+  /* 上の一括トグルと同じ理由で CSS 規則に置く（display を書く関数を増やさない）。
+     一括トグルと同時に当たっても値はどちらも display:none なので、優先関係に依存しない。
+     × を出す条件は board.js 側の canHideTask() が持つ。data-sid の有無だけでは決めず、
+     ①data-sid が無い ②js-auto でない ③済（done-item）④タスク名がある の4つすべてを見る。
+     ここでは「クラスが付いた item を消す」ことだけを担当する。
+     display:none は box を作らないだけで DOM からは消えないため、進捗の再計算（recalc）・
+     D&D の並び・Deck の正本整合はいずれも従来どおり動く。 */
+  .item.tb-task-hidden { display: none; }
+  /* × は .item.done-item { opacity: .62 } の内側に出るので、--ink-3 のままだと
+     カード面とのコントラストが 1.94:1（ライト）／2.15:1（ダーク）まで落ちる
+     ＝[実測] 2026-08-08・Chromium。--ink-2 へ1段濃くして 2.78:1／3.17:1 にする
+     （ダークは UI 部品の 3:1 を満たす）。親の opacity は子で打ち消せないため、
+     子の色を濃くするしか手が無い（.item.done-item の opacity は触らない）。
+     :hover の --crit は .hide-btn:hover の方が詳細度が高いのでそのまま効く。
+     この規則は .task-hide-btn だけに当たるので、自動収集カードの × は従来どおり。 */
+  .task-hide-btn { color: var(--ink-2); }
+
+  /* 今日でないボードの知らせ（board.js が .updated の直後に入れる・HTML 正本には書かない・2026-10-27 新設） */
+  /* 色だけに頼らない: 種類は先頭の記号（aria-hidden）と太字の見出し語「書き込み停止中」／「引き継いだボード」で
+     示す（左の罫の色は補助）。警告の色は --hold にする——--crit は⚙の「強調色（判断ゲート）」で
+     利用者が変えられる（applyCritColor が --crit を上書きする）ため、知らせの色が判断ゲートの色に
+     つられて変わらないようにする。本文の色は --ink（地の --hold-bg / --active-bg / --surface の上）。 */
+  #tb-board-notice, #tb-board-check {
+    display: flex; gap: 10px; align-items: flex-start;
+    margin-top: 10px; padding: 10px 14px;
+    border: 1px solid var(--hold); border-left: 4px solid var(--hold); border-radius: 8px;
+    background: var(--hold-bg); color: var(--ink);
+    font-size: .82rem; line-height: 1.6;
+  }
+  #tb-board-notice[hidden] { display: none; }
+  #tb-board-notice.muted { border-color: var(--line); border-left-color: var(--ink-3); background: var(--surface); }
+  #tb-board-notice.info { border-color: var(--line); border-left-color: var(--active); background: var(--active-bg); }
+  #tb-board-notice .tb-notice-icon, #tb-board-check .tb-notice-icon { flex: none; font-size: 1.05rem; line-height: 1.5; }
+  #tb-board-notice .tb-notice-label, #tb-board-check .tb-notice-label { font-weight: 700; }
+  #tb-board-notice .tb-notice-fix, #tb-board-check .tb-notice-fix { display: block; margin-top: 4px; }
+  /* ボードの点検（#tb-board-check）も同じ見た目にする。board.js が読み込み時に1回だけ入れる（2026-10-27） */

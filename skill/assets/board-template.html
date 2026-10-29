@@ -1,0 +1,101 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE_DATE}} きょうのボード</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐈</text></svg>">
+<link rel="stylesheet" href="board.css">
+
+<div class="board">
+  <header>
+    <h1><img id="cat-icon" src="cat.png" alt=""> きょうのボード</h1>
+    <span class="date">{{FULL_DATE}}</span>
+  </header>
+  <div class="updated">タスク更新 <span id="upd-time">{{UPDATED_AT}}</span><span id="upd-rel"></span> ｜ 表示 <span id="loaded-at"></span>（5分ごと自動再読み込み）<button id="reload-btn" type="button" title="ページを読み直して最新のデータを表示する">↻ 再読み込み</button><button id="theme-btn" type="button" title="テーマ切替">◐</button><button id="settings-btn" type="button" title="設定">⚙ 設定</button></div>
+
+  <div id="settings-panel" hidden>
+    <div class="set-row"><span>テーマ</span><span><button type="button" data-theme-set="auto">自動</button><button type="button" data-theme-set="light">ライト</button><button type="button" data-theme-set="dark">ダーク</button></span></div>
+    <div class="set-row"><span>時刻トリガーのポップアップ通知</span><button type="button" id="popup-toggle">ON</button></div>
+    <div class="set-row"><span>ポップアップの消え方</span><span><button type="button" data-toast="stay">触るまで残す</button><button type="button" data-toast="auto">30秒で自動</button></span></div>
+    <div class="set-row"><span>時刻トリガーの通知音</span><button type="button" id="sound-toggle">OFF</button></div>
+    <div class="set-row"><span>通知音の種類</span><span><button type="button" data-sound="std">標準</button><button type="button" data-sound="chime">チャイム</button><button type="button" data-sound="pip">ピッ</button><button type="button" data-sound="bell">ポーン</button><button type="button" id="sound-test" title="選択中の音を鳴らす">♪ 試聴</button></span></div>
+    <div class="set-row"><span>強調色（判断ゲート）</span><span><button type="button" class="swatch" data-crit="" style="background:#c2402a" title="標準（赤）"></button><button type="button" class="swatch" data-crit="#c26a1f" style="background:#c26a1f" title="橙"></button><button type="button" class="swatch" data-crit="#7c3aed" style="background:#7c3aed" title="紫"></button><button type="button" class="swatch" data-crit="#2563eb" style="background:#2563eb" title="青"></button></span></div>
+    <div class="set-row"><span>× で隠したセッションの記録（<span id="hidden-count">0</span>件）</span><button type="button" id="unhide-all">すべて再表示</button></div>
+    <div class="set-note">通知音は同梱の Deck（監視ねこ）が鳴らします（Windows のみ。既定は OFF。上の「時刻トリガーの通知音」を ON にしてください）。Deck が停止しているときは音が出ません（そのときは監視ねこの欄に「停止」と表示されます。接続情報の無い板では「不明」）。ポップアップは Deck 停止中でも出ますが、Deck 稼働中なら未確認のまま残り、リロードしても復元されます。タスクの時刻はクリックで手動変更できます（✎印・この画面内のみの変更ですが、ポップアップは新しい時刻で出ます。通知音も、Deck 稼働中で通知音を ON にしていて今日のボードと判定された板では、新しい時刻で鳴ります。Claude側の記録も直す場合はチャットで伝えてください）。設定はこのブラウザに保存されます。</div>
+  </div>
+
+  <div class="progress">
+    <div class="progress-label"><span>進捗</span><span>{{DONE}} / {{TOTAL}} 完了</span></div>
+    <div class="bar"><div class="bar-fill" style="width:{{PERCENT}}%"></div></div>
+  </div>
+
+  <!-- {{SECTIONS}}
+    ここから下をセクション＋タスク行で構成する。マークアップ例:
+
+    ※「▶ 次」チップ・「時刻超過」チップ・next-up クラスは外部ファイルの board.js が
+      現在時刻から自動付与する。生成・更新時に手動で書かないこと。
+
+    ■ セクション見出し（正式名: 今日の予定／今日中／ルーチンタスク／明日以降）:
+    <div class="section-label">今日の予定</div>
+
+    ■ 時刻付きタスク（未着手）:
+    <div class="item">
+      <div class="time">9:00</div>
+      <div>
+        <p class="task-title">タスク名</p>
+        <p class="task-note">補足は1行まで</p>
+        <div class="chips"><span class="chip pending">未</span></div>
+      </div>
+    </div>
+
+    ■ 完了タスク（済チップだけを書く。淡色化・打ち消し線は board.js が表示時に自動で付ける）:
+    <div class="item">
+      <div class="time">8:33</div>
+      <div>
+        <p class="task-title">タスク名</p>
+        <p class="task-note">結果の一言</p>
+        <div class="chips"><span class="chip done">済</span></div>
+      </div>
+    </div>
+
+    ■ 最重要判断（1日1件のみ）:
+    <div class="item crit">
+      <div class="time">16:00</div>
+      <div>
+        <p class="task-title">判断タスク名【最重要】</p>
+        <p class="task-note">何を材料に何を決めるか</p>
+        <div class="chips"><span class="chip crit">判断ゲート</span><span class="chip pending">未</span></div>
+      </div>
+    </div>
+
+    ■ 時刻なしタスク（並行作業・終了時ルーチン）は .item に flat を追加し .time 列を省く:
+    <div class="item flat">
+      <div>
+        <p class="task-title">タスク名</p>
+        <p class="task-note">補足</p>
+        <div class="chips"><span class="chip pending">未</span></div>
+      </div>
+    </div>
+
+    ■ 「明日以降」（将来のタスク・最下部に置く。チップは不要）:
+    <div class="section-label">明日以降</div>
+    <div class="item flat">
+      <div>
+        <p class="task-title">8/4(月) Zenn記事公開</p>
+        <p class="task-note">補足は1行まで</p>
+      </div>
+    </div>
+
+    ■ 複数プロジェクト運用（ローカルモード）では、プロジェクトごとに
+      <div class="section-label">プロジェクト名</div> で区切り、
+      各セッションは自分のセクションだけを編集する。
+  -->
+
+  <!-- DECK:AUTO:START -->
+  <!-- DECK:AUTO:END -->
+  <!-- ↑ 同梱の Deck ウォッチャーが書き込む予約領域。中身もマーカーも手で編集しない -->
+
+  <footer>進捗は Claude が随時更新。ページは5分ごとに自動リロードされます。</footer>
+</div>
+
+<div id="toast-area"></div>
+
+<script src="board.js"></script>
