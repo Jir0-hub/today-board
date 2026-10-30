@@ -6,9 +6,10 @@
 #   1. Deck の常駐を停止
 #   2. スタートアップのショートカットを削除
 #   3. Deck の本体ファイルを削除
-#   4. スキルを削除
-#   5. ボードのデータ（board.html / state.json / sound.json / config.json 等）を
-#      消すかどうかは利用者に確認する。既定は「残す」。
+#   4. スキルを削除（フォルダごと消すので、scripts/・hooks/〔hooks.json を含む〕・.claude-plugin/ も消える）
+#   5. ボードのデータ（board.html / state.json / sound.json / config.json / history/ /
+#      ボードの保護の記録 .guard/〔python.txt・format.json を含む〕等）を
+#      消すかどうかは利用者に確認する。既定は「残す」（残すときは .guard/ も残す）。
 #
 # -Data Keep   … 確認せずデータを残す
 # -Data Remove … 確認せずデータも消す
@@ -72,7 +73,7 @@ $removeData = $false
 if ($Data -eq 'Remove') {
     $removeData = $true
 } elseif ($Data -eq 'Ask') {
-    Write-Host '  ボードのデータ（最後に作ったボード・日付の切り替えで残した前の日のボードと、形が崩れる前の版〔history/〕・通知音の設定・表示モード）をどうしますか？'
+    Write-Host '  ボードのデータ（最後に作ったボード・日付の切り替えで残した前の日のボードと、形が崩れる前の版〔history/〕・通知音の設定・表示モード・ボードの保護の記録〔.guard/〕）をどうしますか？'
     Write-Host ("  対象: " + $DataDir)
     $ans = Read-Host '  削除しますか？ [y = 削除 / それ以外 = 残す（既定）]'
     if ($ans -match '^\s*[yY]') { $removeData = $true }
@@ -124,7 +125,7 @@ if (Test-Path -LiteralPath $DeckDir) {
 Write-Step 4 'スキルを削除'
 if (Test-Path -LiteralPath $SkillDir) {
     Remove-Item -LiteralPath $SkillDir -Recurse -Force
-    Write-Ok $SkillDir
+    Write-Ok ($SkillDir + '（board_edit.py とボードの保護のフックを含む）')
 } else {
     Write-Skip 'ありません'
 }

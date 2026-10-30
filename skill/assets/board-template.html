@@ -28,10 +28,12 @@
   </div>
 
   <!-- {{SECTIONS}}
-    ここから下をセクション＋タスク行で構成する。マークアップ例:
+    このコメントは、board_edit.py の create が丸ごと spec のセクション＋タスク行に置き換える。
+    セクションとタスク行の HTML は Claude が手で書かない（ボードの書き方は SKILL.md「ボードの書き方」）。
+    以下は board_edit.py が書く形の参考:
 
     ※「▶ 次」チップ・「時刻超過」チップ・next-up クラスは外部ファイルの board.js が
-      現在時刻から自動付与する。生成・更新時に手動で書かないこと。
+      現在時刻から自動付与する。board_edit.py も書かない。
 
     ■ セクション見出し（正式名: 今日の予定／今日中／ルーチンタスク／明日以降）:
     <div class="section-label">今日の予定</div>
@@ -85,8 +87,8 @@
     </div>
 
     ■ 複数プロジェクト運用（ローカルモード）では、プロジェクトごとに
-      <div class="section-label">プロジェクト名</div> で区切り、
-      各セッションは自分のセクションだけを編集する。
+      <div class="section-label">プロジェクト名</div> で区切り（add --create-section）、
+      各セッションは自分のセクションだけを board_edit.py で操作する。
   -->
 
   <!-- DECK:AUTO:START -->

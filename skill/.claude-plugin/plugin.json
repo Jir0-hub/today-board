@@ -1,0 +1,4 @@
+{
+  "name": "today-board",
+  "description": "きょうのボード: Claude Code が board.html を board_edit.py を通さずに書き換えないよう止める・戻すフック"
+}

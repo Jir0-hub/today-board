@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Deck v2.5 — Claude Code 全セッション常駐ウォッチャー。
+"""Deck v2.6 — Claude Code 全セッション常駐ウォッチャー。
 
 ~/.claude/projects/<エンコード済みパス>/<session-id>.jsonl（セッション transcript）を
 監視し、today-board の board.html 内
@@ -17,7 +17,7 @@
 D&D の反映で data-tb-rolled-fp を書き直すこと（v2.3）。
 タスクの文言は書き換えない。以上は board.html の中の話で、board.html の外では deck/ の state.json・sound.json・
 watcher.log のほか、board.html と同じフォルダの history/（日付の切り替えで退避した元のボードと、形が崩れる前の版・v2.4）・
-state.json の date・board.css / board.js / cat.png（スキルの assets/ と中身が違うものだけ・v2.2 / v2.3）と、
+.guard/（書き込みの記録と format.json・v2.6）・state.json の date・board.css / board.js / cat.png（スキルの assets/ と中身が違うものだけ・v2.2 / v2.3）と、
 多重起動ガードのロックファイル（%TEMP% の下の today-board-deck-locks フォルダ・v1.9）に書く。
 
 タスクは transcript 内の TaskCreate / TaskUpdate（旧形式 TodoWrite）ツール呼び出しを
@@ -103,6 +103,23 @@ v2.5: マーカーのコメントだけが2つとも消え、Deck が書いた�
   部分の間に別の行・見分けられない行が挟まるときはマーカーを足さず（ユーザーの行を囲まない）、watcher.log に理由を残す。
   Deck の部分の外側（前・後ろ）にある行は見ずに、Deck の部分だけを囲む（そこにある行は、書き換え済みの Deck の行も含めて目印の外に残る）。
   マーカーが片方だけ残った板は従来どおり直さない。
+
+v2.6: board.html の書き手をスキルの scripts/board_edit.py に限るしくみ（ガード）に合わせる（2026-10-29 ユーザー判断）。
+  ①手書き部分の指紋（hand_fingerprint）を変える書き込み（D&D の反映・日付の切り替え・マーカーを足して指紋が変わるとき）の
+  前に、board.html と同じフォルダの .guard/auth/ へ書き込みの記録（writer "deck"・書く版の本文・その指紋・読んだ版の指紋）を
+  残す。ガードはこの記録で Deck の書き込みを正規と見分ける。指紋を変えない書き込み（ふだんのマーカー間の書き直し・完了表示の
+  整合・ヘッダの値）では記録しない。.guard/format.json が無ければ {"v": 1} で作り、知らない版なら記録を書かずに板を書いて
+  watcher.log に1行残す（format.json が読めないときも同じ）。記録を書けなければ板を書かない。記録の関数は board_edit.py の写し
+  （48時間より古い記録は書くときに消す）。
+  ②置き換える直前に board.html を読み直し、読んだときと違えば書かない（記録を書いていれば消す）。マーカー間の書き直しはその周回を
+  見送って次の周回で読み直し、D&D の反映は最初からやり直し（最初の1回を含めて BOARD_REREAD_ATTEMPTS 回まで）、日付の切り替えは
+  中止して次の機会に回す。
+  ③os.replace が PermissionError（ほかのプログラムが読み取りで開いている等）なら BOARD_REPLACE_RETRY_SEC あけて
+  BOARD_REPLACE_RETRIES 回までやり直す。やり直す前にも読み直して比べ、違えば②と同じに扱う（待つ間に置き換えた版を消さない）。
+  ④D&D の反映は、要求を受けてから MOVE_DEADLINE_SEC 以内に書けなければ書かずにやめる（board.js が待つのをやめる 1.5 秒より短く
+  して、「保存できなかった」と知らせた移動を後から書かないため）。
+  ⑤D&D の反映を書けなかったとき（③を使い切った・読み直しが読めなかった・②を試し切った・記録を書けなかった・④の時間切れ）は、
+  board.js へ 500・409・503 のいずれかを返し、watcher.log に残す。board.js は localStorage に保存したうえで、画面に知らせを出す。
 
 制約: Python 標準ライブラリのみ・単一ファイル・外部ネットワーク通信なし
 （127.0.0.1 限定の受信ポート 1 つのみ。8737〜8746 のうち空いている 1 つ・v2.1）・
@@ -1614,30 +1631,246 @@ def build_html(sessions, now=None):
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- 書き込みの記録（.guard/・v2.6）
+#
+# board.html の書き手をスキルの scripts/board_edit.py に限るしくみ（ガード）は、ツールの実行の前後で板の指紋
+# （hand_fingerprint）を比べ、正規の書き手の記録から辿れない版を戻す。Deck も正規の書き手なので、指紋を変える
+# 書き込みの「前に」記録を残す（後に残すと、置き換えから記録までの間に走ったガードが Deck の版を戻しうるため）。
+# 形式: .guard/format.json（{"v": 1}・無いときだけ作る）と、.guard/auth/<ns 20桁>-<pid>.html（書く版の本文）・.json
+# （{v, fp, base_fp, writer, body}＝確定の印）の1件1ファイル。
+# 以下の定数・関数は skill/scripts/board_edit.py からそのまま写したもの（単一ファイルの制約で import できない）。
+# 変えるときは board_edit.py と同時に変え、試験（tests/test_board_edit.py の T-P）で一致を確かめる。
+
+GUARD_DIRNAME = ".guard"
+GUARD_FORMAT_V = 1
+GUARD_RECORD_MAX_AGE_SEC = 48 * 3600
+_guard_last_ns = [0]   # このプロセスで最後に使った記録の時刻（消した記録の名前を使い回さないため）
+
+
+def _guard_atomic_write(path, data):
+    fd, tmp = tempfile.mkstemp(prefix=".tb-guard-", suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def guard_format_ok(board_path):
+    """.guard/format.json を無いときだけ作り、版を読む。(知っている版か, 読んだ版) を返す。読めなければ (False, None)。"""
+    gdir = os.path.join(os.path.dirname(os.path.abspath(board_path)), GUARD_DIRNAME)
+    os.makedirs(os.path.join(gdir, "auth"), exist_ok=True)
+    fpath = os.path.join(gdir, "format.json")
+    if not os.path.exists(fpath):
+        fd, tmp = tempfile.mkstemp(prefix=".tb-guard-", suffix=".tmp", dir=gdir)
+        with os.fdopen(fd, "wb") as f:
+            f.write(json.dumps({"v": GUARD_FORMAT_V}).encode("utf-8"))
+        try:
+            os.link(tmp, fpath)          # 既にあれば失敗する＝上書きしない
+        except FileExistsError:
+            pass
+        except OSError:
+            try:
+                with open(fpath, "xb") as f:
+                    f.write(json.dumps({"v": GUARD_FORMAT_V}).encode("utf-8"))
+            except FileExistsError:
+                pass
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    for k in range(3):
+        try:
+            with open(fpath, "rb") as f:
+                v = json.loads(f.read().decode("utf-8-sig")).get("v")
+            return v == GUARD_FORMAT_V, v
+        except (OSError, ValueError, AttributeError):
+            time.sleep(0.1)
+    # 読めない（壊れている等）は「知らない版」と同じに扱う: 記録は書かず、書き手は板を書いて知らせる（2026-10-30 ユーザー判断）
+    return False, None
+
+
+def guard_write_record(board_path, body, fp, base_fp, writer):
+    """書き込みの記録を1件書く（本文 .html → 確定の印 .json の順）。(json のパス, html のパス) を返す。
+
+    書けなければ OSError。format.json の版を知らない・読めないときは書かずに None を返す。
+    """
+    known, _v = guard_format_ok(board_path)
+    if not known:
+        return None
+    adir = os.path.join(os.path.dirname(os.path.abspath(board_path)), GUARD_DIRNAME, "auth")
+    ns = max(time.time_ns(), _guard_last_ns[0] + 1)
+    while True:
+        # 時計の刻みが粗い（Windows）と、同じプロセスの続けた記録が同じ名前になるので、空くまで 1 ns ずつ進める
+        base = "%020d-%d" % (ns, os.getpid())
+        html_path = os.path.join(adir, base + ".html")
+        json_path = os.path.join(adir, base + ".json")
+        if not os.path.exists(html_path) and not os.path.exists(json_path):
+            break
+        ns += 1
+    _guard_last_ns[0] = ns
+    _guard_atomic_write(html_path, body)
+    try:
+        rec = {"v": GUARD_FORMAT_V, "fp": fp, "base_fp": base_fp, "writer": writer, "body": base + ".html"}
+        _guard_atomic_write(json_path, json.dumps(rec, ensure_ascii=False).encode("utf-8"))
+    except BaseException:
+        try:
+            os.remove(html_path)
+        except OSError:
+            pass
+        raise
+    return json_path, html_path
+
+
+def guard_remove_record(paths):
+    """自分の記録を消す（確定の印 .json → 本文 .html の順）。"""
+    if not paths:
+        return
+    for p in paths:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def guard_prune_records(board_path, now_ns=None, max_age_sec=GUARD_RECORD_MAX_AGE_SEC):
+    """max_age_sec より古い記録を消す（.json → .html の順）。消した件数を返す。"""
+    adir = os.path.join(os.path.dirname(os.path.abspath(board_path)), GUARD_DIRNAME, "auth")
+    now_ns = time.time_ns() if now_ns is None else now_ns
+    limit = now_ns - int(max_age_sec * 1e9)
+    try:
+        names = sorted(os.listdir(adir))
+    except OSError:
+        return 0
+    removed = 0
+    for name in names:
+        m = re.match(r"^(\d{20})-(\d+)\.json$", name)
+        if not m or int(m.group(1)) >= limit:
+            continue
+        guard_remove_record([os.path.join(adir, name), os.path.join(adir, name[:-5] + ".html")])
+        removed += 1
+    for name in names:
+        m = re.match(r"^(\d{20})-(\d+)\.html$", name)
+        if m and int(m.group(1)) < limit and not os.path.exists(os.path.join(adir, name[:-5] + ".json")):
+            guard_remove_record([os.path.join(adir, name)])
+    return removed
+
+
 # ---------------------------------------------------------------- board.html 書き込み
 
 # inject（マーカー間置換）と移動適用（v1.6）の read-modify-write 全体を直列化するロック。
 # 受信サーバはデーモンスレッドで動くため、これが無いと書き込みが競合しうる。
+# ロックは Deck のプロセスの中だけのもので、ほかの書き手（board_edit.py・利用者）とは、置き換える直前の
+# 読み直しの比較で重なりを見つける（v2.6。比べた後から置き換えまでの短い間は残る）。
 _BOARD_LOCK = threading.Lock()
+BOARD_REPLACE_RETRIES = 5       # os.replace が PermissionError のときのやり直しの回数（v2.6）
+BOARD_REPLACE_RETRY_SEC = 0.2
+BOARD_REREAD_ATTEMPTS = 3       # D&D の反映を試す回数の上限（最初の1回を含む）。読み直しが別の書き手の書き込みを見つけたら最初からやり直す（v2.6）
+MOVE_DEADLINE_SEC = 1.0         # D&D の反映の時間の上限（要求を受けてから。board.js の deckFetch が待つ 1.5 秒より短くする・v2.6）
+BOARD_READ_RETRIES = 3          # 読み直しが PermissionError のときのやり直しの回数（v2.6）
+BOARD_READ_RETRY_SEC = 0.1
+MOVE_WRITE_FAILED = "移動を board.html に書き込めませんでした"   # D&D を書けなかったときに board.js へ返す理由（v2.6。board.js は表示しない）
+_HOOK_BEFORE_REREAD = None      # 試験用のフック（本番では None）。置き換える直前の読み直しの前に呼ぶ（board_path, record）
+_last_board_replace_tries = [0]  # 直近の書き込みで os.replace を試した回数（試験で見る）
+_guard_unknown_logged = set()    # 知らない版の format.json を watcher.log に書いた (ボード, 版)（同じ組は1回だけ書く）
 
 
-def _atomic_write_board(board_path, new_text):
-    """一時ファイル → os.replace で board.html をアトミックに書き込む。成功なら True。"""
+def _log_guard_unknown(board_path):
+    """format.json の版を知らないため記録を書かなかったことを、(ボード, 版) ごとに1回だけ watcher.log に残す。"""
+    try:
+        _known, v = guard_format_ok(board_path)
+    except OSError:
+        v = None
+    key = (os.path.abspath(board_path), repr(v))
+    if key in _guard_unknown_logged:
+        return
+    _guard_unknown_logged.add(key)
+    log("警告: .guard/format.json の版を知らないか読めないため（v=%r）、書き込みの記録を残さずに board.html を書きました"
+        "（ボードの保護に戻されることがあります。同じ版のあいだは、このログを繰り返しません）" % (v,))
+
+
+def _read_board_raw(board_path):
+    """読み直し（v2.6）。バイト列、無ければ None。PermissionError は BOARD_READ_RETRY_SEC あけてやり直し、使い切ったら送出する。"""
+    for k in range(BOARD_READ_RETRIES + 1):
+        try:
+            with open(board_path, "rb") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+        except PermissionError:
+            if k == BOARD_READ_RETRIES:
+                raise
+            time.sleep(BOARD_READ_RETRY_SEC)
+
+
+def _atomic_write_board(board_path, new_text, base_raw=None, base_text=None, deadline=None):
+    """一時ファイル → os.replace で board.html をアトミックに書き込む。
+
+    戻り値: "written"（書いた）| "conflict"（読み直しで別の書き手の書き込みを見つけたので書かなかった）|
+    "error"（書けなかった。理由は watcher.log）| "timeout"（deadline を過ぎたので書かなかった）。
+    base_raw は書き手が読んだ版のバイト列。渡せば、置き換える直前に読み直して比べ、違えば書かない（v2.6）。
+    base_text は同じ版の本文。渡せば、手書き部分の指紋が変わる書き込みのときだけ、置き換えの前に
+    .guard/auth/ へ記録を書く（v2.6）。置き換えられなかったときは、書いた記録を消す。
+    os.replace の PermissionError は BOARD_REPLACE_RETRY_SEC あけて BOARD_REPLACE_RETRIES 回までやり直す。やり直す前にも
+    読み直して比べる（待つ間に別の書き手が置き換えた版を消さないため。v2.6）。
+    deadline（time.time() の値）を渡せば、それを過ぎてからは os.replace を呼ばない（v2.6・D&D の反映の時間の上限）。
+    """
     tmp_fd = None
     tmp_path = None
+    record = None
+    data = new_text.encode("utf-8")
     try:
         dir_name = os.path.dirname(board_path) or "."
         tmp_fd, tmp_path = tempfile.mkstemp(prefix=".deck-", suffix=".tmp", dir=dir_name)
         with os.fdopen(tmp_fd, "wb") as f:
             tmp_fd = None
-            f.write(new_text.encode("utf-8"))
-        os.replace(tmp_path, board_path)
-        tmp_path = None
-        return True
+            f.write(data)
+        if base_text is not None:
+            base_fp = hand_fingerprint(base_text)
+            fp = hand_fingerprint(new_text)
+            if fp != base_fp:
+                try:
+                    guard_prune_records(board_path)
+                    record = guard_write_record(board_path, data, fp, base_fp, "deck")
+                except OSError as e:
+                    log("警告: 書き込みの記録（.guard/auth/）を書けなかったため、board.html を書いていません: %s" % e)
+                    return "error"
+                if record is None:
+                    _log_guard_unknown(board_path)
+        if _HOOK_BEFORE_REREAD is not None:
+            _HOOK_BEFORE_REREAD(board_path, record)
+        if base_raw is not None and _read_board_raw(board_path) != base_raw:
+            return "conflict"
+        for k in range(BOARD_REPLACE_RETRIES + 1):
+            if deadline is not None and time.time() >= deadline:
+                return "timeout"
+            _last_board_replace_tries[0] = k + 1
+            try:
+                os.replace(tmp_path, board_path)
+                tmp_path = None
+                break
+            except PermissionError:
+                if k == BOARD_REPLACE_RETRIES:
+                    raise
+                time.sleep(BOARD_REPLACE_RETRY_SEC)
+                # 待つ間に別の書き手が置き換えていたら、その版を消さない（読み直して比べ、違えば書かない）
+                if base_raw is not None and _read_board_raw(board_path) != base_raw:
+                    return "conflict"
+        record = None
+        return "written"
     except OSError as e:
         log("警告: board.html への書き込みに失敗: %s" % e)
-        return False
+        return "error"
     finally:
+        if record is not None:
+            guard_remove_record(record)   # 置き換えなかった版の記録を残さない（確定の印 .json → 本文 .html の順）
         if tmp_fd is not None:
             try:
                 os.close(tmp_fd)
@@ -1653,7 +1886,8 @@ def _atomic_write_board(board_path, new_text):
 def inject(board_path, html_block):
     """マーカー間を置換して board.html をアトミックに更新する。
 
-    戻り値: "written" | "unchanged" | "no-board" | "no-marker" | "error"
+    戻り値: "written" | "unchanged" | "no-board" | "no-marker" | "conflict" | "error"
+    （"conflict" は、置き換える直前の読み直しで別の書き手の書き込みを見つけて書かなかったとき・v2.6。次の周回で読み直す）
     マーカー間の置換に加えて、手書きセクションの完了表示（done-item / strike）を
     状態チップに合わせて整合させる（normalize_done_marks）。
     加えて、欠けたマーカーを足し（_restore_markers）、ヘッダの値と引き継いだボードの印を計算し直す（derive_header）。
@@ -1711,7 +1945,12 @@ def inject(board_path, html_block):
 
         if new_text == text:
             return "unchanged"
-        if not _atomic_write_board(board_path, new_text):
+        # 置き換える直前に読み直して比べ、指紋が変わる（マーカーを足した）ときは記録を先に書く（v2.6）
+        wrote = _atomic_write_board(board_path, new_text, base_raw=raw, base_text=text)
+        if wrote == "conflict":
+            log("再生成: 書く直前に board.html が別の書き手に書き換えられたため、今回は書きませんでした（次の周回で読み直します）")
+            return "conflict"
+        if wrote != "written":
             return "error"
         # 書いた版が形の正しい版なら、それを「崩れる前の版」として持ち直す（v2.4。直前に読んだ版より新しいため）
         st = _lastgood.get(os.path.abspath(board_path))
@@ -2051,36 +2290,58 @@ def apply_board_move(text, k, sec, before=None, head=False):
     return "".join(lines), 200, "ok"
 
 
-def apply_move_to_board(board_path, k, sec, before=None, head=False):
+def apply_move_to_board(board_path, k, sec, before=None, head=False, deadline=None):
     """board.html を読み、移動を適用してアトミックに書き戻す。(コード, メッセージ) を返す。
 
     read-modify-write 全体を _BOARD_LOCK で包み、inject と同時に走っても競合しない。
+    Deck の外の書き手とは、置き換える直前の読み直しで重なりを見つけ、最初からやり直す（最初の1回を含めて
+    BOARD_REREAD_ATTEMPTS 回まで・v2.6）。deadline（time.time() の値）を渡せば、それを過ぎてからは書かない
+    （ロックを待つ間も含む・v2.6）。書けなかったら、書き込みの失敗・記録を書けなかったときは 500、試し切ったときは 409、
+    時間切れは 503 を、理由 MOVE_WRITE_FAILED で返す（v2.6）。
     """
-    with _BOARD_LOCK:
-        if not os.path.isfile(board_path):
-            return 500, "board.html がありません"
-        try:
-            with open(board_path, "rb") as f:
-                raw = f.read()
-            text = raw.decode("utf-8")
-        except (OSError, UnicodeDecodeError) as e:
-            log("警告: board.html を読めません（移動適用）: %s" % e)
-            return 500, "board.html を読めません"
-        new_text, code, msg = apply_board_move(text, k, sec, before, head)
-        if code != 200:
-            return code, msg
-        if new_text == text:
-            return 200, "unchanged"
-        # 引き継いだボードの印の指紋（v2.3）: 動かす前の板が「切り替えてから誰も触っていない」状態なら、
-        # D&D は Deck 自身の書き込みなので、印を外さないよう指紋を新しい値に書き換える。動かす前に既に
-        # 外の書き手が変えていた（指紋が合わない）なら、書き換えずに残す（次の再生成で外れる）
-        stored = board_attr(text, "data-tb-rolled-fp")
-        if stored is not None and stored == rolled_fp(text):
-            new_text = set_board_attrs(new_text, add=(("data-tb-rolled-fp", rolled_fp(new_text)),))
-        if not _atomic_write_board(board_path, new_text):
-            return 500, "書き込みに失敗しました"
-        remember_hand_fingerprint(board_path, new_text)  # Deck 自身の書き込みでは #upd-time を動かさない（v2.2）
-        return 200, "ok"
+    wait = -1 if deadline is None else max(0.0, deadline - time.time())
+    if not _BOARD_LOCK.acquire(timeout=wait):
+        log("警告: D&D の移動を反映できませんでした。ほかの書き込みが終わるのを %.1f 秒待っても終わらなかったため、"
+            "書かずにやめました" % MOVE_DEADLINE_SEC)
+        return 503, MOVE_WRITE_FAILED
+    try:
+        for _attempt in range(BOARD_REREAD_ATTEMPTS):
+            if not os.path.isfile(board_path):
+                return 500, "board.html がありません"
+            try:
+                with open(board_path, "rb") as f:
+                    raw = f.read()
+                text = raw.decode("utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                log("警告: board.html を読めません（移動適用）: %s" % e)
+                return 500, "board.html を読めません"
+            new_text, code, msg = apply_board_move(text, k, sec, before, head)
+            if code != 200:
+                return code, msg
+            if new_text == text:
+                return 200, "unchanged"
+            # 引き継いだボードの印の指紋（v2.3）: 動かす前の板が「切り替えてから誰も触っていない」状態なら、
+            # D&D は Deck 自身の書き込みなので、印を外さないよう指紋を新しい値に書き換える。動かす前に既に
+            # 外の書き手が変えていた（指紋が合わない）なら、書き換えずに残す（次の再生成で外れる）
+            stored = board_attr(text, "data-tb-rolled-fp")
+            if stored is not None and stored == rolled_fp(text):
+                new_text = set_board_attrs(new_text, add=(("data-tb-rolled-fp", rolled_fp(new_text)),))
+            wrote = _atomic_write_board(board_path, new_text, base_raw=raw, base_text=text, deadline=deadline)
+            if wrote == "written":
+                remember_hand_fingerprint(board_path, new_text)  # Deck 自身の書き込みでは #upd-time を動かさない（v2.2）
+                return 200, "ok"
+            if wrote == "timeout":
+                log("警告: D&D の移動を反映できませんでした。%.1f 秒以内に書けなかったため、書かずにやめました"
+                    % MOVE_DEADLINE_SEC)
+                return 503, MOVE_WRITE_FAILED
+            if wrote != "conflict":
+                return 500, MOVE_WRITE_FAILED
+            # 読み直しで別の書き手の書き込みを見つけた → 読み直した板に、もう一度当てる
+        log("警告: D&D の移動を反映できませんでした。書く直前に board.html が別の書き手に書き換えられ、%d 回試しても"
+            "書けませんでした" % BOARD_REREAD_ATTEMPTS)
+        return 409, MOVE_WRITE_FAILED
+    finally:
+        _BOARD_LOCK.release()
 
 
 # ---------------------------------------------------------------- 日付の切り替え（v2.2）
@@ -2850,9 +3111,9 @@ def update_state_date(board_path, today):
 def sync_assets(board_path, assets_dir):
     """スキルの静的ファイル（board.css / board.js / cat.png）を board.html の隣へ写す。
 
-    skill/SKILL.md create モード6 の cp と同じ向き（本番スキル → board.html の隣）で、本番スキルを正とする
-    （配る順は「リポジトリ → 本番スキル → 実行系」。中間の本番スキルを飛ばすと create の cp で
-    巻き戻るため、本番スキルは常に最新である前提に立っている。mtime では比べない——実行系だけを先に
+    skill/SKILL.md create モード6 で board_edit.py の create が写すのと同じ向き（本番スキル → board.html の隣）で、
+    本番スキルを正とする（配る順は「リポジトリ → 本番スキル → 実行系」。中間の本番スキルを飛ばすと create の
+    写しで巻き戻るため、本番スキルは常に最新である前提に立っている。mtime では比べない——実行系だけを先に
     新しくする正規の手順は無く、実行系は生成物＝利用者が編集する場所ではないため）。
     呼ぶのは、常駐の起動時と ASSET_SYNC_SEC ごと（v2.3）、および日付の切り替えで新しいボードを作ったとき。
     中身が同じなら書かない。写した数を返す。
@@ -3123,7 +3384,12 @@ def try_rollover(board_path, today=None, now=None, assets_dir=DEFAULT_SKILL_ASSE
         if st2.st_mtime_ns != st1.st_mtime_ns or st2.st_size != st1.st_size:
             log("日付の切り替え: 退避の間に board.html が書き換えられたため中止しました。次の機会にやり直します")
             return "conflict"
-        if not _atomic_write_board(board_path, new_text):
+        # 書き込みの記録を先に書き、置き換える直前にもう一度読み直して比べる（v2.6）
+        wrote = _atomic_write_board(board_path, new_text, base_raw=raw1, base_text=text)
+        if wrote == "conflict":
+            log("日付の切り替え: 書く直前に board.html が書き換えられたため中止しました。次の機会にやり直します")
+            return "conflict"
+        if wrote != "written":
             return "error"
         remember_hand_fingerprint(board_path, new_text)
     state_written = update_state_date(board_path, today)
@@ -3793,6 +4059,7 @@ class _BoardMoveHandler(BaseHTTPRequestHandler):
             log("エラー（GET 応答・継続）: %r" % e)
 
     def do_POST(self):  # noqa: N802
+        started = time.time()   # D&D の反映の時間の上限はここから数える（v2.6）
         try:
             route, board_value = self._split_path()
             try:
@@ -3838,7 +4105,7 @@ class _BoardMoveHandler(BaseHTTPRequestHandler):
             if not isinstance(before, str):
                 before = None  # null / 欠落は「末尾へ」
             head = bool(data.get("head"))
-            code, msg = apply_move_to_board(self.board_path, k, sec, before, head)
+            code, msg = apply_move_to_board(self.board_path, k, sec, before, head, deadline=started + MOVE_DEADLINE_SEC)
             log("移動受信: k=%r sec=%r → %d (%s)" % (k, sec, code, msg))
             if code == 200:
                 body = b'{"ok": true}'
@@ -4046,6 +4313,9 @@ def watch_loop(projects_dir, board_path, state, state_path, sound_store=None, de
                 last_snapshot = snapshot
                 last_guard_block = guard_block
                 known_board_mtime = _board_mtime(board_path)
+                if result == "conflict":
+                    # 書く直前に別の書き手が書いた（v2.6）。その書き手が更新時刻を古いまま残しても、次の周回で必ず読み直す
+                    last_snapshot = object()
 
                 if result == "no-board":
                     board_missing_logged = True

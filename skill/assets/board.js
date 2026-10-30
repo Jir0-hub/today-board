@@ -75,6 +75,8 @@
     //    なので、要求を消す向きで直した。この緩和は現行であり撤回していない。
     //    【2026-08-05 追記・SKILL.md 側にも規定を置いた】同日、発行側の SKILL.md
     //    （create モード 5）に「{{FULL_DATE}} は半角数字の YYYY-MM-DD（曜）形式」を追記した。
+    //    （2026-10-30 以後、ヘッダの日付は Claude ではなく board_edit.py の create が書く。書式の決まりは
+    //    今も SKILL.md の create モード 5 にある＝「ヘッダの日付は board_edit.py が…YYYY-MM-DD（曜）形式に書く」）
     //    上の緩和と両立する——判定器は年なし（M/D）も従来どおり受理し、SKILL.md の規定は
     //    下記【失う能力】を避けるために年ありへ寄せた、実装より狭い**発行側の規定**である
     //    （SKILL.md 上は必須）。
@@ -1705,6 +1707,29 @@
     });
     // Deck常駐時（127.0.0.1 の受信ポート・board.html の接続情報を deckFetch が使う）はHTML正本へ自動反映し、localStorageには保存しない。
     // Deck未対応・停止中・タイムアウト・別のボードの Deck だけが応答した時は従来どおりlocalStorage保存にフォールバック。
+    // Deck が応答したのに保存できなかった（200 以外）ときと、待つのをやめた（タイムアウト）ときは、画面に知らせる
+    // （2026-10-30 ユーザー判断。それまでは黙って localStorage に逃がしていた）。Deck に接続できない（止まっている）ときは
+    // 知らせない——監視ねこの行が Deck の停止を出す。Deck v2.6 は D&D を受けてから 1 秒以内に書けなければ書かないので、
+    // タイムアウト（deckFetch の 1.5 秒）の後に Deck が書くことは無い（v2.5 以前の Deck では起こりうる）
+    // 失敗が続いても知らせは1件にまとめる（既に出ていれば積まずに出し直し、30秒で消える設定なら時計を延ばす）
+    var moveFailEl = null, moveFailTimer = null;
+    function moveSaveFailed() {
+      var area = document.getElementById('toast-area');
+      if (!area) return;
+      var el = moveFailEl;
+      if (!el || !el.parentNode) {
+        el = document.createElement('div');
+        el.className = 'toast';
+        el.textContent = '移動を保存できませんでした。このブラウザの表示にだけ残り、ボードのファイルには入っていません。もう一度動かしてください。何度やっても出るときは、動かした項目と行き先を Claude に伝えてください';
+        el.addEventListener('click', function () { if (el.parentNode) el.remove(); });
+        moveFailEl = el;
+      }
+      area.appendChild(el);   // 既にあれば末尾へ移して出し直す
+      if (moveFailTimer) { clearTimeout(moveFailTimer); moveFailTimer = null; }
+      if (LS.get('toastMode', 'stay') === 'auto') {
+        moveFailTimer = setTimeout(function () { if (el.parentNode) el.remove(); }, 30000);
+      }
+    }
     function persistMove(rec) {
       function persistLocal() {
         var arr = readJSON('mv:' + dateKey, []);
@@ -1718,9 +1743,10 @@
       var p = deckFetch('/board/move', { method: 'POST', body: JSON.stringify(rec) });
       if (!p) { persistLocal(); return; }
       p.then(function (res) {
-        if (!res || !res.ok) persistLocal();
-      }).catch(function () {
+        if (!res || !res.ok) { persistLocal(); moveSaveFailed(); }
+      }).catch(function (err) {
         persistLocal();
+        if (err && err.name === 'AbortError') moveSaveFailed();   // タイムアウト（Deck が 1.5 秒以内に答えなかった）
       });
     }
 

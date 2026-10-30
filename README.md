@@ -24,7 +24,7 @@ Claude Code に「進捗どう？」と聞いてチャットログを遡る代�
 ## 特徴
 
 - **セットアップはダブルクリック1回** — `setup.bat` がスキルと Deck の配置・スタートアップ登録・起動まで済ませる（管理者権限なし・外部サーバーなし・ビルドなし・npm なし）
-- **Claude 自身が更新** — ボードは Claude が読み書きする普通のHTMLファイル。ページは5分ごとに自動リロード
+- **Claude 自身が更新** — ボードは普通のHTMLファイルで、Claude が同梱の専用スクリプト（`board_edit.py`）で読み書きする（書く前に形が崩れないかを確かめる）。ページは5分ごとに自動リロード
 - **全セッション自動集約＋通知音（Deck）** — 並行セッションの状態（タスク一覧があれば進捗も）をボード下部に自動挿入し、時刻トリガーの通知音も鳴らす常駐ウォッチャーを同梱。セットアップで一緒に入り、以後は Windows のログオン時に起動する（Python 標準ライブラリのみ・単一ファイル・音は Windows のみ）
 - **時刻トリガー通知** — 予定時刻になるとポップアップで知らせます（ポップアップは既定 ON）。**通知音は既定 OFF。⚙で ON にすると同梱の Deck が4種から選んだ音を鳴らします**
 - **「▶ 次」自動ハイライト** — 次にやるタスクを現在時刻から自動で強調。過ぎたタスクには「時刻超過」チップ
@@ -155,7 +155,8 @@ Claude Code に「進捗どう？」と聞いてチャットログを遡る代�
    - 起動した画面のいちばん下に `auto mode on` と出ていれば、確認の多くを Claude Code が自動で判断します
      （Claude Code 2.1.283 以降の既定）。それでも確認が出ることがあります。
      確認が出た場合は、何に対する確認かを見てください。  
-     きょうのボードの作業——`~/.claude/skills/today-board/`・`~/.claude/today-board/` のファイルを読む・`~/.claude/today-board/` に書き込む・日時を見る `date`（PowerShell では `Get-Date`）、ファイルを写す `cp`（同 `Copy-Item`）、ファイルを置き換える `mv`（同 `Move-Item`）、ファイルの有無や中身を見る `Test-Path`・`Get-Content`、ボードを開く `Start-Process` を実行する——なら Yes 側を選んでください（ボードとその設定は `~/.claude/today-board/` に置くためです）。それ以外の場所やコマンドへの確認なら、Yes にする必要はありません
+     きょうのボードの作業——`~/.claude/skills/today-board/`・`~/.claude/today-board/` のファイルを読む・ボードを書き換える専用のスクリプトを `~/.claude/today-board/.guard/python.txt` に書かれた Python で実行する（`<その Python> ~/.claude/skills/today-board/scripts/board_edit.py <操作>` の形。PowerShell では `& $py "$env:USERPROFILE\.claude\skills\today-board\scripts\board_edit.py" <操作>`）・その操作の中身（JSON）を `~/.claude/today-board/ops/` に書く・表示モードの設定 `~/.claude/today-board/config.json`（初回だけ）と状態ファイル `~/.claude/today-board/state.json` を書く・日時を見る `date`（PowerShell では `Get-Date`）、ファイルの有無や中身を見る `Test-Path`・`Get-Content`、`python.txt` を読む `tr`（bash の場合）、ボードを開く `Start-Process` を実行する——なら Yes 側を選んでください（ボードとその設定は `~/.claude/today-board/` に置くためです）。それ以外の場所やコマンドへの確認なら、Yes にする必要はありません。
+     Claude がボード（`board.html`）をこのスクリプトを通さずに書き換えようとしたとき（ファイルの置き換え `mv`・`Move-Item` などを含む）は、スキルに入っているボードの保護が止めるか、その操作が終わった時点で元に戻します（元に戻さずに、書き換えられたことを Claude に知らせるだけのことや、元に戻せずにそのことを Claude に知らせることもあります）
    - 作業フォルダの外のファイルを初めて読むときは、4つの選択肢の確認が出ることがあります。
      `Yes, and keep allowing any reads outside the working directories`（以後は聞かずに読ませる）か
      `Yes, but ask again next time`（今回だけ読ませ、次もまた聞く）を選んでください。
@@ -178,24 +179,27 @@ Claude Code に「進捗どう？」と聞いてチャットログを遡る代�
 | # | 内容 |
 |---|---|
 | 1 | Python 3 の確認（無ければ入手先を案内して中断。勝手にインストールはしません） |
-| 2 | スキルを `~/.claude/skills/today-board/` に配置（ボードが読む `board.css` / `board.js` / `cat.png` は `~/.claude/today-board/` にも置き、再実行時は毎回最新に更新します） |
+| 2 | スキルを `~/.claude/skills/today-board/` に配置（ボードが読む `board.css` / `board.js` / `cat.png` は `~/.claude/today-board/` にも置き、再実行時は毎回最新に更新します）。スキルのフォルダには、ボードを書き換える専用のスクリプト（`scripts/board_edit.py`）と、ボードの保護のフック（`hooks/`・`.claude-plugin/`）も入ります。フックの設定（`hooks/hooks.json`）は 1 で見つけた Python の場所を書き込んで作り、同じ場所を `~/.claude/today-board/.guard/python.txt` にも書きます。`~/.claude/today-board/.guard/format.json` は無いときだけ作ります |
 | 3 | Deck を `~/.claude/today-board/deck/` に配置 |
 | 4 | スタートアップにショートカットを登録（次回のログオン時に起動） |
 | 5 | Deck を起動 |
 
 - **何度実行しても安全です。** 2回目以降は「更新」として振る舞い、ボードのデータ
   （`board.html`・`state.json`・`config.json`・通知音の設定 `sound.json`）はそのまま残ります
+  （`.guard/` も、書き直すのは `python.txt` だけで、ほかの中身には触れません）
+- **`setup.bat` を実行したときに開いている Claude Code のセッションは、開き直すまでボードの保護が効きません。**
+  Claude Code はスキルのフォルダをプラグインとして読み込み、そのフックをセッションの開始時に読み込むためです
 - スキルと Deck は `~/.claude/` の下に写されるので、リポジトリから入手して展開したフォルダはセットアップ後に消しても動作に問題はありませんが、`uninstall.bat` を使うときと、`setup.bat` をもう一度実行するとき（すぐ下の項）にまた要ります
 - **Python を入れ替えたりバージョンを上げたりした後に Deck が起動しなくなったら、`setup.bat` をもう一度実行してください。**
-  スタートアップのショートカットが、セットアップした時点の Python の場所を指しているためです
+  スタートアップのショートカットと、ボードの保護のフックの設定（`hooks.json`・`.guard/python.txt`）が、セットアップした時点の Python の場所を指しているためです
 
 ## アンインストール
 
-展開したフォルダ（`setup.bat` と同じ場所）の `uninstall.bat` をダブルクリック。常駐の停止・スタートアップ解除・スキルと Deck の削除を行います。
+展開したフォルダ（`setup.bat` と同じ場所）の `uninstall.bat` をダブルクリック。常駐の停止・スタートアップ解除・スキルと Deck の削除を行います（スキルのフォルダごと消すので、`board_edit.py` とボードの保護のフックも消えます）。
 `setup.bat` と同じ「開いているファイル - セキュリティの警告」が出たら、「実行」を押してください。
 
 **ボードのデータを消すかどうかは実行時に聞かれます（既定は「残す」）。** 黒い窓に
-「削除しますか？ [y = 削除 / それ以外 = 残す（既定）]:」と出たら、ボードのデータ（最後に作ったボード・日付の切り替えで残した前の日のボードと、形が崩れる前の版〔`history/`〕・通知音の設定・表示モード。
+「削除しますか？ [y = 削除 / それ以外 = 残す（既定）]:」と出たら、ボードのデータ（最後に作ったボード・日付の切り替えで残した前の日のボードと、形が崩れる前の版〔`history/`〕・通知音の設定・表示モード・ボードの保護の記録〔`.guard/`〕。
 場所は `~/.claude/today-board/`）を**残すなら何も入力せず Enter**、**消すなら `y` と入力して Enter** です。
 「=== 完了 ===」が出たら、`setup.bat` のときと同じく何かキーを押して窓を閉じてください。
 
@@ -209,15 +213,37 @@ Claude Code に「進捗どう？」と聞いてチャットログを遡る代�
 `~/.claude/skills/today-board/` に手でコピーすればボード本体は動く想定ですが、**未検証・無保証**です
 （Deck は入らないので、全セッション自動集約と通知音は付きません。Deck は Windows 以外でも音を鳴らさずに動く作りですが、確認はしておりません）。
 
+ボードの書き換えとボードの保護に Python 3 を使います。コピーした後、`setup.bat` の代わりに次を手で行います
+（`/usr/bin/python3` は `command -v python3` で出た絶対パスに置き換えてください）:
+
+```
+python3 ~/.claude/skills/today-board/hooks/make_hooks.py --python /usr/bin/python3
+mkdir -p ~/.claude/today-board/.guard
+printf '%s' /usr/bin/python3 > ~/.claude/today-board/.guard/python.txt
+```
+
+1行目で `hooks/hooks.json` ができます。3行目の `python.txt` は、Claude がボードを書き換えるスクリプトを起動するときに読むファイルで、
+**無いと Claude はボードを書きません**。中身は Python 3 の絶対パスを1行だけ（UTF-8・BOM なし・末尾の改行なし。上の `printf '%s'` はこの形で書きます）。
+Python の場所が変わったら、1行目と3行目をやり直してください。Windows 以外で、このフック（Claude Code がスキルのフォルダをプラグインとして読み込んで登録するもの）が働くかは**未検証**です。
+
 ```
 ~/.claude/skills/today-board/
 ├── LICENSE
 ├── SKILL.md
-└── assets/
-    ├── board-template.html
-    ├── board.css
-    ├── board.js
-    └── cat.png
+├── .claude-plugin/
+│   └── plugin.json
+├── assets/
+│   ├── board-template.html
+│   ├── board.css
+│   ├── board.js
+│   └── cat.png
+├── hooks/
+│   ├── guard.py
+│   ├── hooks.json            ← make_hooks.py が作る
+│   ├── hooks.template.json
+│   └── make_hooks.py
+└── scripts/
+    └── board_edit.py
 ```
 
 ## Deck について
@@ -237,31 +263,35 @@ Deck は Claude Code の transcript（内部形式）を読み取り専用で監
 ## 動作環境
 
 - **Claude Code**（CLI / デスクトップアプリ）のスキル機能を使います
-- **Python 3**（Deck の常駐に必要。`setup.bat` が有無を確認します）
+- **Python 3**（ボードの書き換え〔`board_edit.py`〕・ボードの保護〔フック〕と、Deck の常駐に必要。`setup.bat` が有無を確認します）
 - 動作確認済み: Windows 11（Python 3.12・作者の普段の利用）。
   加えて 2026-10-25 に、**Python も Claude Code も入っていない別の Windows アカウント**（名前は日本語）で、
   **`setup.bat` をダブルクリックして本来の場所へ入れる**ことも確認済です（Python 3.15.1〔Python install manager〕・Claude Code 2.1.310・Microsoft Edge）。
+  この確認は、`setup.bat` がボードの保護の設定（`hooks.json`・`.guard/python.txt`）を作るようになる前の版で行ったものです。
+  ボードの書き換え（`board_edit.py`）とボードの保護は、2026-10-30 に作者の PC のデスクトップアプリで1回確かめました（このときは `setup.bat` を使わず、同じファイルを手で置きました。`setup.bat` から入れた状態・Claude Code の CLI・別のアカウントでは、まだ確かめていません）。
 - `setup.bat` / `uninstall.bat` / Deck は Windows 専用です。macOS / Linux は無保証（AS IS）で、スキルの手動コピーのみ（OS 非依存の想定・未検証）。要望が多ければ対応を検討します
 - ボードの表示は普通のブラウザで行います（DOM・`fetch`・`localStorage`・`sessionStorage` などブラウザ標準の機能だけを使い、外部のライブラリは使っていません）。
 - 動作確認は Microsoft Edge で実施しております。ほかのブラウザでもブラウザ標準の機能だけで動く作りですが、表示や動きがおかしいときは Edge で開いてください
 
 ## しくみ
 
-ボード本体は5ファイル、Deck の本体は1ファイルです（起動用の `start-deck.bat` を同梱）。
+ボード本体（スキル）は `skill/` の下のファイル、Deck の本体は1ファイルです（起動用の `start-deck.bat` を同梱）。
 
 - `skill/SKILL.md` — Claude への指示書（ボードの作り方・更新の仕方・やってはいけないこと）
-- `skill/assets/board-template.html` — 約100行のテンプレ。Claude がプレースホルダを埋めて `~/.claude/today-board/board.html` に書き出す
-- `skill/assets/board.css` / `board.js` — 見た目と自動機能（次タスクのハイライト・通知の描画〔ポップアップの発火判定はブラウザ側でも常に走り、Deck 経由と同じキーなら二重に出ない〕・テーマ）。Claude はこの2つを編集しない（ボードを作るたびにスキルから `~/.claude/today-board/` へ写すだけ。Deck が動いていれば、Deck も起動時と5分ごとに同じように写します）
+- `skill/assets/board-template.html` — 約100行のテンプレ。Claude は今日のタスクを JSON（spec）にして渡すだけで、`board_edit.py` の create がこのテンプレから `~/.claude/today-board/board.html` を作る。行の追加・状態の切り替えなどの更新も `board_edit.py` の操作で行い、Claude は HTML を書かない
+- `skill/assets/board.css` / `board.js` — 見た目と自動機能（次タスクのハイライト・通知の描画〔ポップアップの発火判定はブラウザ側でも常に走り、Deck 経由と同じキーなら二重に出ない〕・テーマ）。Claude はこの2つを編集しない（ボードを作るたびに `board_edit.py` の create がスキルから `~/.claude/today-board/` へ写すだけ。Deck が動いていれば、Deck も起動時と5分ごとに同じように写します）
 - `skill/assets/cat.png` — ボード見出しの猫アイコン
 - `skill/LICENSE` — ライセンスの文面（MIT。リポジトリ直下の `LICENSE` と同じもの）。ボードの動作には使いません
-- `deck/deck_watcher.py` — 全セッションの transcript を差分監視し、ボード下部の予約領域（DECKマーカー間）にセッションカード（状態と、タスク一覧があれば進捗）を書き込む常駐ウォッチャー。ボードのファイルのうち予約領域の外に触れるのは「D&D 移動の反映」「完了表示を済チップに合わせて揃える整合」「日付が変わったときの今日のボードへの切り替え」「引き継いだボードの印を、手書きの部分が変わったときに外すこと（印の無い板に残った指紋も片付ける。D&D の反映では印の指紋を書き直す）」「進捗・更新時刻などヘッダの値の計算し直し」「欠けた予約領域の目印の足し直し（目印が2つとも無いときだけ。Deck が書いた部分が空行だけを挟んでひと続きに残っていればそれを囲み、間に別の行があれば足さない。Deck が書いた部分が1つも無ければ、ボードの末尾（`<footer>`）が1か所に決まるときだけその前に足す）」だけで、タスクの文言は書き換えません（ボードのファイルの外では、前の日のボードと形が崩れる前の版を残す `history/`・ボードと同じフォルダの `state.json` の日付・`board.css` / `board.js` / `cat.png` の写しと、`deck/` の `state.json`・`sound.json`・`watcher.log`、一時フォルダの多重起動防止のロックファイルに書きます）
+- `skill/scripts/board_edit.py` — `board.html` を書き換える専用のスクリプト（Python 3 標準ライブラリのみ）
+- `skill/hooks/guard.py`・`hooks.template.json`・`make_hooks.py`、`skill/.claude-plugin/plugin.json` — ボードの保護のフック。`setup.bat` が `make_hooks.py` で `hooks.json` を作り、Claude Code がスキルのフォルダをプラグインとして読み込んで登録します。フックは `board.html`・`.guard/`・`history/` に書きます（ボードを元に戻す・戻す前の版を `history/` に残す・控えと記録を `.guard/` に置く）
+- `deck/deck_watcher.py` — 全セッションの transcript を差分監視し、ボード下部の予約領域（DECKマーカー間）にセッションカード（状態と、タスク一覧があれば進捗）を書き込む常駐ウォッチャー。ボードのファイルのうち予約領域の外に触れるのは「D&D 移動の反映」「完了表示を済チップに合わせて揃える整合」「日付が変わったときの今日のボードへの切り替え」「引き継いだボードの印を、手書きの部分が変わったときに外すこと（印の無い板に残った指紋も片付ける。D&D の反映では印の指紋を書き直す）」「進捗・更新時刻などヘッダの値の計算し直し」「欠けた予約領域の目印の足し直し（目印が2つとも無いときだけ。Deck が書いた部分が空行だけを挟んでひと続きに残っていればそれを囲み、間に別の行があれば足さない。Deck が書いた部分が1つも無ければ、ボードの末尾（`<footer>`）が1か所に決まるときだけその前に足す）」だけで、タスクの文言は書き換えません（ボードのファイルの外では、前の日のボードと形が崩れる前の版を残す `history/`・ボードと同じフォルダの `state.json` の日付・`board.css` / `board.js` / `cat.png` の写し・ボードと同じフォルダの `.guard/`（ボードの手書き部分を書き換える前に残す書き込みの記録と、その形式の版を書いた `format.json`）と、`deck/` の `state.json`・`sound.json`・`watcher.log`、一時フォルダの多重起動防止のロックファイルに書きます）
 
-進捗が変わるたびに Claude が HTML を編集し、開きっぱなしのブラウザタブが自動リロードで追随します。
+進捗が変わるたびに Claude が `board_edit.py` でボードを書き換え、開きっぱなしのブラウザタブが自動リロードで追随します。
 日付が変わると、Deck が前の日のボードを `~/.claude/today-board/history/` へ残し、終わっていないタスクを引き継いだ今日のボードを作ります。ボードのパスが毎日同じなので、local モードでは、**タブを開いたままにしておけば、翌日は自動で新しい日のボードに切り替わります**（Deck が止まっているときと artifact モードでは切り替わりません。Deck が動いていても、ボードの形が崩れているときなど、Deck が切り替えずにおくボードがあります。local モードでは、ヘッダの下に「書き込み停止中」と出ます。どの場合も、Claude に「今日のボードを作って」と頼んでください。artifact モードでこの知らせが出るかは確かめていません）。
 
 ### 自動で直るもの・Claude に頼るしかないもの
 
-ボードの中身は Claude が書きます。進捗の数え直しと済みの表示は、ボードのスクリプトが画面の上で計算し直します。日付の切り替えと更新時刻は Deck が直すので、Deck が動いている local モードに限り、Claude が書き忘れても正しい値に戻ります（更新時刻は、Deck が動いている間にボードが書き換えられたときだけ直ります）。ボードが今日のものでないときは「書き込み停止中」、ボードの形が崩れているときは「ボードの点検」の知らせが、local モードではヘッダの下に出ます。今日の予定・今日中に、済になっていない判断ゲートが2件以上あるときや、見出しの名前が正式名に似ているのに正式名でないときも、「ボードの点検」の知らせが出ます（どちらも直しはしません）。Deck が動いている間にボードの形が崩れたときは、Deck が崩れる前の版を `history/` に残します（Deck は板を直しません。直すのは Claude か利用者になります）。
+ボードの中身は Claude が `board_edit.py` の操作で書きます（`board_edit.py` は書くたびに進捗と更新時刻も数え直します）。進捗の数え直しと済みの表示は、ボードのスクリプトが画面の上で計算し直します。日付の切り替えと更新時刻は Deck が直すので、Deck が動いている local モードに限り、Claude が書き忘れても正しい値に戻ります（更新時刻は、Deck が動いている間にボードが書き換えられたときだけ直ります）。ボードが今日のものでないときは「書き込み停止中」、ボードの形が崩れているときは「ボードの点検」の知らせが、local モードではヘッダの下に出ます。今日の予定・今日中に、済になっていない判断ゲートが2件以上あるときや、見出しの名前が正式名に似ているのに正式名でないときも、「ボードの点検」の知らせが出ます（どちらも直しはしません）。Deck が動いている間にボードの形が崩れたときは、Deck が崩れる前の版を `history/` に残します（Deck は板を直しません。直すのは Claude か利用者になります）。Claude が `board_edit.py` を通さずにボードを書き換えようとしたときは、ボードの保護が止めるか、そのツールが終わった時点で元に戻します（戻す前の版は `history/board-<日付>-foreign-<時刻>.html` に残します。元に戻さずに Claude に知らせるだけのこともあります）。
 
 一方、**どのタスクが済んだか・何を今日やるかが正しいかは、機械には判断できません。** Claude が間違えた状態を書くと、そのまま表示されます。おかしいと思ったら、チャットで Claude に直すよう伝えてください。Deck を止めている場合や artifact モードでは、日付の切り替えも自動では行われないので、Claude に「今日のボードを作って」と頼んでください。
 
@@ -271,7 +301,8 @@ Deck は Claude Code の transcript（内部形式）を読み取り専用で監
 A. ボードのファイル（`board.html` など）はローカルに置かれ、Deck も外部へは何も送りません。ただし、Claude がボードを作る・更新するときはボードの内容を読み書きするので、その内容は Claude Code の会話の一部として、ほかの会話と同じく Claude（Anthropic の API）に送られます。artifact モードを自分で選んだ場合は、さらに claude.ai 上に発行されます。
 
 **Q. スキルって何？**  
-A. スキルは Claude Code が状況に応じて読み込む Markdown の指示書で、フォルダを置くだけで有効になります。`setup.bat` はそのコピー（と Deck を `~/.claude/today-board/deck/` に置いて常駐させること）を代わりにやっているだけで、実行ファイルのインストールやレジストリの変更はしません（作るのはスタートアップのショートカット1つだけ）。
+A. スキルは Claude Code が状況に応じて読み込む Markdown の指示書で、フォルダを置くだけで有効になります。`setup.bat` はそのコピー（と Deck を `~/.claude/today-board/deck/` に置いて常駐させること）を代わりにやっているだけで、実行ファイルのインストールやレジストリの変更はしません（ファイルを写すほかに作るのは、スタートアップのショートカットと、ボードの保護の設定〔`hooks.json`・`.guard/` の `python.txt`・`format.json`〕だけ）。
+このスキルのフォルダには、Claude Code がボードのファイルを専用のスクリプト（`board_edit.py`）を通さずに書き換えようとしたときに止める・元に戻す小さな Python スクリプト（フック）も入っていて、Claude Code はこのフォルダをプラグインとして読み込みます（`~/.claude/settings.json` は書き換えません）。
 
 **Q. 複数プロジェクト・複数セッションでも使える？**  
 A. 使えます。local モードでは全セッションが同じボードを、そのつど読み直して書き換えます（プロジェクトごとにセクションを分ける運用が SKILL.md に書いてあります）。さらに常駐している Deck が、各セッションの状態（タスク一覧があれば進捗も）を自動で1枚に集約します。

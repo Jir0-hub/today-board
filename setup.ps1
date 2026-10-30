@@ -5,7 +5,12 @@
 # やること:
 #   1. Python 3 の有無を確認（無ければ入手先を案内して中断する。勝手に入れない）
 #   2. スキルを ~/.claude/skills/today-board/ に配置し、ボードが読むアセット
-#      （board.css / board.js / cat.png）を ~/.claude/today-board/ にも配置
+#      （board.css / board.js / cat.png）を ~/.claude/today-board/ にも配置。
+#      スキルのフォルダには scripts/（board_edit.py）・hooks/（ボードの保護のフック）・
+#      .claude-plugin/ も写し、1 で見つけた Python で hooks/hooks.json を作る
+#      （Claude Code はスキルのフォルダをプラグインとして読み込み、このフックを登録する）。
+#      同じ Python の絶対パスを ~/.claude/today-board/.guard/python.txt に書き、
+#      .guard/format.json が無ければ作る（.guard/ のほかの中身には触れない）
 #   3. Deck（常駐ウォッチャー）を ~/.claude/today-board/deck/ に配置
 #   4. スタートアップフォルダに Deck のショートカットを作成（pythonw = コンソール非表示）
 #   5. Deck を即時起動（4 のショートカットを explorer.exe で開く。setup を走らせたプロセスから切り離すため）
@@ -400,6 +405,71 @@ foreach ($a in @('board.css', 'board.js', 'cat.png')) {
 }
 Write-Ok ('SKILL.md' + $skillLicense + ' / assets（ボードが読む board.css / board.js / cat.png も更新）')
 
+# board.html を書き換える専用のスクリプト（scripts/）と、ボードの保護のフック（hooks/・.claude-plugin/）。
+# スキルのフォルダそのものが Claude Code のプラグインとして読み込まれ、hooks/hooks.json のフックが登録される。
+# hooks.json はリポジトリに無い（雛形 hooks.template.json だけがある）。ここで 1 の Python の絶対パスを
+# 埋めて作る（make_hooks.py が一時ファイルに書いてから置き換える。PowerShell の ConvertTo-Json は使わない）
+New-Item -ItemType Directory -Force -Path (Join-Path $SkillDir 'scripts') | Out-Null
+foreach ($f in (Get-ChildItem -LiteralPath (Join-Path $SrcSkill 'scripts') -File)) {
+    Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $SkillDir 'scripts') -Force
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $SkillDir 'hooks') | Out-Null
+foreach ($n in @('guard.py', 'make_hooks.py', 'hooks.template.json')) {
+    Copy-Item -LiteralPath (Join-Path $SrcSkill ('hooks\' + $n)) -Destination (Join-Path $SkillDir 'hooks') -Force
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $SkillDir '.claude-plugin') | Out-Null
+Copy-Item -LiteralPath (Join-Path $SrcSkill '.claude-plugin\plugin.json') -Destination (Join-Path $SkillDir '.claude-plugin') -Force
+
+$hooksOk = $false
+$mkOut = @()
+$mkCode = $null
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'   # Windows PowerShell 5.1 は Stop のまま 2>&1 にすると、標準エラーの1行目で止まるため
+try {
+    # -I: 作業フォルダの同名モジュールを読まない。-X utf8: パスに日本語があっても出力が化けないように
+    $mkOut = @(& $python -I -X utf8 (Join-Path $SkillDir 'hooks\make_hooks.py') --python $python 2>&1 | ForEach-Object { "$_" })
+    $mkCode = $LASTEXITCODE
+} catch {
+    $mkOut = @("$_")
+} finally {
+    $ErrorActionPreference = $prevEap
+}
+if ($mkCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $SkillDir 'hooks\hooks.json'))) {
+    $hooksOk = $true
+    Write-Ok 'scripts（board_edit.py）/ ボードの保護のフック（hooks.json を作成）'
+    foreach ($l in $mkOut) { Write-Info2 ('  ' + $l) }
+} else {
+    Write-Warn2 'ボードの保護のフック（hooks.json）を作れませんでした（前の setup で作ったものがあれば、それが残っています）:'
+    foreach ($l in $mkOut) { Write-Warn2 ('  ' + $l) }
+}
+
+# .guard/: ボードの保護が使う置き場（ボードと同じフォルダ）。
+# python.txt … 1 の Python の絶対パス（1行・UTF-8〔BOM なし〕・末尾の改行なし）。Claude が board_edit.py を
+#              起動するときにこれを読む。毎回書き直す（Python の場所が変わったときに追随するため）。
+# format.json … 記録の形式の版。無いときだけ作る（既にあれば中身が何でも触れない。記録・控え等のほかの中身にも触れない）
+$guardDir = Join-Path $DataDir '.guard'
+New-Item -ItemType Directory -Force -Path $guardDir | Out-Null
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$pyTxt = Join-Path $guardDir 'python.txt'
+$pyTmp = Join-Path $guardDir ('.python-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+[System.IO.File]::WriteAllText($pyTmp, $python, $utf8NoBom)
+Move-Item -LiteralPath $pyTmp -Destination $pyTxt -Force
+$fmt = Join-Path $guardDir 'format.json'
+$fmtNote = 'format.json はそのまま'
+if (-not (Test-Path -LiteralPath $fmt)) {
+    $fmtTmp = Join-Path $guardDir ('.format-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    [System.IO.File]::WriteAllText($fmtTmp, '{"v": 1}', $utf8NoBom)
+    try {
+        # File.Move は置き先が既にあると失敗する＝その間に別の書き手が作った format.json を上書きしない
+        [System.IO.File]::Move($fmtTmp, $fmt)
+        $fmtNote = 'format.json を作成'
+    } catch {
+        Remove-Item -LiteralPath $fmtTmp -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $fmt)) { Write-Warn2 ("format.json を作れませんでした（最初にボードを書くときに作られます）: " + $_) }
+    }
+}
+Write-Ok ('.guard\python.txt / ' + $fmtNote)
+
 # --- 3. Deck 配置
 Write-Step 3 'Deck を配置'
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
@@ -484,6 +554,11 @@ switch ($launchResult) {
     default {
         Write-Host '  スタートアップに登録したので、次回からは Windows のログオン時に Deck が起動します。'
     }
+}
+if ($hooksOk) {
+    Write-Host '  開いている Claude Code のセッションは、開き直すまでボードの保護が効きません。'
+} else {
+    Write-Host '  ボードの保護のフックを作れませんでした。上の案内を確かめて、setup.bat をもう一度実行してください。'
 }
 Write-Host '  アンインストールは uninstall.bat です。'
 Write-Host ''

@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"], "timeout": 30}
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"], "timeout": 30}
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"], "timeout": 30}
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"], "timeout": 30}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"], "timeout": 30}
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"], "timeout": 30}
+        ]
+      }
+    ]
+  }
+}
