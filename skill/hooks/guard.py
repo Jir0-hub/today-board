@@ -888,7 +888,7 @@ def restore_hint(rel, saved_raw):
 
 NOTIFY_REASON = {
     "old": "このツールの前に控えた版が24時間より古いため、書き換えが正規のものか確かめられず、元に戻していません。",
-    "deck": "入っている Deck（~/.claude/today-board/deck/deck_watcher.py）の版が古い（v2.6 未満）ため、正規の書き換えと見分けられず、元に戻していません。",
+    "deck": "入っている Deck（~/.claude/today-board/deck/deck_watcher.py）の版が v2.6 未満か、版を読み取れないため、正規の書き換えと見分けられず、元に戻していません。ユーザーに、Deck を新しくする（Windows では setup.bat をもう一度実行する）よう伝えてください（setup.bat は Claude が実行しない）。",
     "unknown": "ガードの版が古いため確かめられず、元に戻していません。直前のツールが board_edit.py の実行だった場合も、この知らせが出ることがあります（この状態では board_edit.py の書き込みを正規と確かめられないため）。ユーザーに、スキルを入れ直す（Windows では setup.bat をもう一度実行する）よう伝えてください（setup.bat は Claude が実行しない）。",
     "corrupt": ".guard/format.json が読めないため確かめられず、元に戻していません。直前のツールが board_edit.py の実行だった場合も、この知らせが出ることがあります（この状態では board_edit.py の書き込みを正規と確かめられないため）。この出力をユーザーに伝えてください。",
 }
@@ -1122,8 +1122,9 @@ def protected_kind(path, cwd):
 
 
 DENY_TEXT = {
-    "board": ("board.html は board_edit.py 以外で書き換えないでください。Write・Edit はこのとおり止めます。"
-              "Bash・PowerShell など別の手段でも書かないでください（ツールの実行中に board.html へ書かれた分は、ボードの保護が元に戻すか、書き換えられたことを知らせます）。"
+    "board": ("ボードのファイル（board.html・board.new.html・state.json の file_path が指すファイル）は board_edit.py 以外で書き換えないでください。Write・Edit はこのとおり止めます。"
+              "Bash・PowerShell など別の手段でも書かないでください（ボードの保護があとから確かめるのは、既定の board.html のタスクの行・見出し・ヘッダの日付と、形の一部だけです。"
+              "知らせが無くても、書いてよいという意味ではありません）。"
               "%s で操作してください（使い方は today-board スキルの SKILL.md「ボードの書き方」）。"
               "SKILL.md にその節が無いか、このスクリプトが無いときは、ボードを書かずに、この出力をユーザーに伝えてください。"),
     HISTORY_DIRNAME: ("~/.claude/today-board/history/ はボードの退避の置き場です。Claude はここに書かないでください"
