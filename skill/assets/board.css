@@ -200,8 +200,8 @@
 
   /* 今日でないボードの知らせ（board.js が .updated の直後に入れる・HTML 正本には書かない・2026-10-27 新設） */
   /* 色だけに頼らない: 種類は先頭の記号（aria-hidden）と太字の見出し語「書き込み停止中」／「引き継いだボード」で
-     示す（左の罫の色は補助）。警告の色は --hold にする——--crit は⚙の「強調色（判断ゲート）」で
-     利用者が変えられる（applyCritColor が --crit を上書きする）ため、知らせの色が判断ゲートの色に
+     示す（左の罫の色は補助）。警告の色は --hold にする——--crit は⚙の「強調色（重要タスク）」で
+     利用者が変えられる（applyCritColor が --crit を上書きする）ため、知らせの色が重要タスクの色に
      つられて変わらないようにする。本文の色は --ink（地の --hold-bg / --active-bg / --surface の上）。 */
   #tb-board-notice, #tb-board-check {
     display: flex; gap: 10px; align-items: flex-start;

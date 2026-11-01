@@ -145,7 +145,6 @@ class TestOps(Sandbox):
         before = self.read()
         p = os.path.join(self.dir, "s2.json")
         for bad in (
-            {"items": [{"section": "今日中", "title": "a", "crit": True}, {"section": "今日の予定", "title": "b", "crit": True}]},
             {"items": [{"section": "本日中", "title": "a"}]},
             {"items": [{"section": "今日中", "title": "a", "time": "9時"}]},
             {"items": [{"section": "今日中", "title": "a", "chip": "zzz"}]},
@@ -256,7 +255,7 @@ class TestOps(Sandbox):
         self.ed("set-crit", "--item", "作業B", "on")
         t = self.text()
         self.assertIn('class="item flat crit"', t)
-        self.assertIn('<span class="chip crit">判断ゲート</span><span class="chip pending">未</span>', t)
+        self.assertIn('<span class="chip crit">重要タスク</span><span class="chip pending">未</span>', t)
         self.assertTrue({i["title"]: i for i in self.items()}["作業B"]["crit"])
 
     def test_set_time(self):
@@ -648,11 +647,8 @@ class TestChecks(Sandbox):
         self.assertIn("1 / 4 完了", t)
         self.assertIn("width:25%", t)
 
-    def test_k10_k11_k12_warn_but_write(self):
+    def test_k11_k12_warn_but_write(self):
         self.create()
-        rc, out = self.ed("set-crit", "--item", "作業B", "on")
-        self.assertEqual(rc, 0)
-        self.assertIn("K10", [w["code"] for w in out["warnings"]])
         rc, out = self.ed("add", "--section", "本日中", "--create-section", "--title", "x")
         self.assertEqual(rc, 0)
         self.assertIn("K11", [w["code"] for w in out["warnings"]])
@@ -660,6 +656,93 @@ class TestChecks(Sandbox):
         rc, out = self.ed("set-chip", "--item", "作業A", "--chip", "done")
         self.assertEqual(rc, 0)
         self.assertIn("K12", [w["code"] for w in out["warnings"]])
+
+
+class TestImportantTasks(Sandbox):
+    """重要タスク（crit）に件数の上限は無い。古い表示名のチップが残った板もクラスで読む。"""
+    OLD = '<span class="chip crit">判断ゲート</span>'
+    NEW = '<span class="chip crit">重要タスク</span>'
+
+    def old_board(self):
+        """今日の板のチップを古い表示名にする（すでに作ったボードと同じ形）。"""
+        self.create()
+        self.write(self.text().replace(self.NEW, self.OLD))
+        self.assertIn(self.OLD, self.text())
+
+    def test_create_accepts_many_crit(self):
+        spec = {"items": [
+            {"section": "今日の予定", "time": "9:00", "title": "a", "crit": True},
+            {"section": "今日の予定", "time": "10:00", "title": "b", "crit": True},
+            {"section": "今日中", "title": "c", "crit": True},
+        ]}
+        out = self.create(spec)
+        self.assertEqual(out["warnings"], [])
+        self.assertEqual(self.text().count(self.NEW), 3)
+        self.assertEqual([i["crit"] for i in self.items()], [True, True, True])
+
+    def test_set_crit_on_many_no_warning(self):
+        self.create()  # SPEC の「判断する」が1件
+        for title in ("作業A", "作業B"):
+            rc, out = self.ed("set-crit", "--item", title, "on")
+            self.assertEqual(rc, 0)
+            self.assertEqual(out["warnings"], [])
+        self.assertEqual(self.status().get("warnings", []), [])
+        self.assertEqual(sum(1 for i in self.items() if i["crit"]), 3)
+
+    def test_old_chip_status_and_ops(self):
+        self.old_board()
+        self.assertEqual(self.status().get("warnings", []), [])
+        its = {i["title"]: i for i in self.items()}
+        self.assertTrue(its["判断する"]["crit"])
+        self.assertEqual(its["判断する"]["chip"], "pending")
+        # 別の行への操作では古いチップに触らない
+        self.ed("set-chip", "--item", "作業B", "--chip", "done")
+        self.assertIn(self.OLD, self.text())
+        # その行のチップを替えても古いチップは残り、crit のまま
+        self.ed("set-chip", "--item", "16:00|判断する", "--chip", "done")
+        t = self.text()
+        self.assertIn(self.OLD + '<span class="chip done">済</span>', t)
+        self.assertTrue({i["title"]: i for i in self.items()}["判断する"]["crit"])
+
+    def test_old_chip_set_crit(self):
+        self.old_board()
+        # on にし直すと新しい表示名へ置き換わり、チップは増えない
+        self.ed("set-crit", "--item", "16:00|判断する", "on")
+        t = self.text()
+        self.assertNotIn(self.OLD, t)
+        self.assertEqual(t.count(self.NEW), 1)
+        self.write(t.replace(self.NEW, self.OLD))
+        # off は古いチップも class も外す
+        self.ed("set-crit", "--item", "16:00|判断する", "off")
+        t = self.text()
+        self.assertNotIn(self.OLD, t)
+        self.assertNotIn("item crit", t)
+
+    def test_old_chip_deck_reads_same(self):
+        """Deck の走査・形の判定・手書き部分の指紋の入力は、チップの文字で変わらない（クラスで見ている）。"""
+        self.create()
+        new = self.text().splitlines(keepends=True)
+        old = self.text().replace(self.NEW, self.OLD).splitlines(keepends=True)
+        self.assertNotEqual(new, old)
+        self.assertTrue(dw.board_structure_ok(old))
+        sec_new, its_new, deck_new = dw._scan_board(new)
+        sec_old, its_old, deck_old = dw._scan_board(old)
+        self.assertEqual(sec_old, sec_new)
+        self.assertEqual(deck_old, deck_new)
+        self.assertEqual(len(its_old), len(its_new))
+        a, b = list(new), list(old)
+        dw._recalc_progress(a)
+        dw._recalc_progress(b)
+        self.assertEqual("".join(b), "".join(a).replace(self.NEW, self.OLD))
+
+    def test_old_chip_rollover_keeps_row(self):
+        """日付の切り替えは古いチップの行もそのまま引き継ぐ（文字を見ていない）。"""
+        self.create()
+        text = self.text().replace(self.NEW, self.OLD)
+        text = re.sub(r'(<span class="date">)[^<]*', r"\g<1>2020-01-01（水）", text, count=1)
+        rolled, _info = dw.roll_board_text(text, date(2020, 1, 2), "09:00")
+        self.assertIn(self.OLD, rolled)
+        self.assertRegex(rolled, r'class="item[^"]*crit')
 
 
 # ------------------------------------------------------------------ T-P（Deck との写しの一致）

@@ -17,7 +17,7 @@
     <div class="set-row"><span>ポップアップの消え方</span><span><button type="button" data-toast="stay">触るまで残す</button><button type="button" data-toast="auto">30秒で自動</button></span></div>
     <div class="set-row"><span>時刻トリガーの通知音</span><button type="button" id="sound-toggle">OFF</button></div>
     <div class="set-row"><span>通知音の種類</span><span><button type="button" data-sound="std">標準</button><button type="button" data-sound="chime">チャイム</button><button type="button" data-sound="pip">ピッ</button><button type="button" data-sound="bell">ポーン</button><button type="button" id="sound-test" title="選択中の音を鳴らす">♪ 試聴</button></span></div>
-    <div class="set-row"><span>強調色（判断ゲート）</span><span><button type="button" class="swatch" data-crit="" style="background:#c2402a" title="標準（赤）"></button><button type="button" class="swatch" data-crit="#c26a1f" style="background:#c26a1f" title="橙"></button><button type="button" class="swatch" data-crit="#7c3aed" style="background:#7c3aed" title="紫"></button><button type="button" class="swatch" data-crit="#2563eb" style="background:#2563eb" title="青"></button></span></div>
+    <div class="set-row"><span>強調色（重要タスク）</span><span><button type="button" class="swatch" data-crit="" style="background:#c2402a" title="標準（赤）"></button><button type="button" class="swatch" data-crit="#c26a1f" style="background:#c26a1f" title="橙"></button><button type="button" class="swatch" data-crit="#7c3aed" style="background:#7c3aed" title="紫"></button><button type="button" class="swatch" data-crit="#2563eb" style="background:#2563eb" title="青"></button></span></div>
     <div class="set-row"><span>× で隠したセッションの記録（<span id="hidden-count">0</span>件）</span><button type="button" id="unhide-all">すべて再表示</button></div>
     <div class="set-note">通知音は同梱の Deck（監視ねこ）が鳴らします（Windows のみ。既定は OFF。上の「時刻トリガーの通知音」を ON にしてください）。Deck が停止しているときは音が出ません（そのときは監視ねこの欄に「停止」と表示されます。接続情報の無い板では「不明」）。ポップアップは Deck 停止中でも出ますが、Deck 稼働中なら未確認のまま残り、リロードしても復元されます。タスクの時刻はクリックで手動変更できます（✎印・この画面内のみの変更ですが、ポップアップは新しい時刻で出ます。通知音も、Deck 稼働中で通知音を ON にしていて今日のボードと判定された板では、新しい時刻で鳴ります。Claude側の記録も直す場合はチャットで伝えてください）。設定はこのブラウザに保存されます。</div>
   </div>
@@ -58,13 +58,13 @@
       </div>
     </div>
 
-    ■ 最重要判断（1日1件のみ）:
+    ■ その日に特に重要なタスク:
     <div class="item crit">
       <div class="time">16:00</div>
       <div>
-        <p class="task-title">判断タスク名【最重要】</p>
-        <p class="task-note">何を材料に何を決めるか</p>
-        <div class="chips"><span class="chip crit">判断ゲート</span><span class="chip pending">未</span></div>
+        <p class="task-title">重要なタスク名</p>
+        <p class="task-note">何をするか・なぜ重要か</p>
+        <div class="chips"><span class="chip crit">重要タスク</span><span class="chip pending">未</span></div>
       </div>
     </div>
 

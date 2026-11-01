@@ -3,7 +3,7 @@
 """board_edit.py v1.0 — きょうのボード（board.html）を書き換える専用のスクリプト。
 
 Claude は board.html を直接書かず、このスクリプトに操作を渡す。スクリプトが HTML を機械で書き換え、
-書く前に出来上がりの形を検査し（K1〜K9 に当たれば書かない・K10〜K12 は書いて警告する）、
+書く前に出来上がりの形を検査し（K1〜K9 に当たれば書かない・K11・K12 は書いて警告する）、
 書く前に .guard/auth/ へ書き込みの記録を残してから、一時ファイル→os.replace で置き換える。
 置き換える直前に板を読み直し、読んだときと違えば（ほかの書き手が書いた）記録を消して最初からやり直す。
 create は置き換える前の板を history/board-<日付>-before-create-<時刻>.html に、restore は戻す前の板を
@@ -765,7 +765,7 @@ def chip_span(chip):
     return '<span class="chip %s">%s</span>' % (CHIP_CLASS[chip], CHIP_LABELS[chip])
 
 
-CRIT_SPAN = '<span class="chip crit">判断ゲート</span>'
+CRIT_SPAN = '<span class="chip crit">重要タスク</span>'
 
 
 def build_item(indent, nl, title, note=None, chip="pending", crit=False, time_=None):
@@ -1027,19 +1027,10 @@ def count_progress(lines):
 
 
 def warnings_for(text):
-    """K10〜K12（書くが警告を返す）。"""
+    """K11・K12（書くが警告を返す）。"""
     lines = text.splitlines(keepends=True)
     secs, items = layout(lines)
     warns = []
-    crit = 0
-    for it in items:
-        block = "".join(lines[it["s"]:it["e"] + 1])
-        if "crit" in _open_tag_classes(block) and not is_done_block(block) \
-                and _canon_section(it["section"] or "") in ("今日の予定", "今日中"):
-            crit += 1
-    if crit >= 2:
-        warns.append({"code": "K10", "message": "今日の予定・今日中に、済でない判断ゲートが %d 件あります（1日1件の決まり）。"
-                      "残す1件をユーザーに確かめ、他は set-crit --item <項目> off で外してください。" % crit})
     odd = []
     for s in secs:
         lb = s["label"]
@@ -1049,7 +1040,7 @@ def warnings_for(text):
             odd.append(lb)
     if odd:
         warns.append({"code": "K11", "message": "見出し「%s」は正式名（今日の予定・今日中・ルーチンタスク・明日以降）ではありません。"
-                      "この版には見出しの名前を直す操作が無く、move もこの見出しの項目は動かせません。正式名の見出しへ移してよいかをユーザーに確かめ、よいと言われた項目は add で正式名の見出しへ足し直し（status の time・chip・note を写し、判断ゲートなら set-crit で付け直す）、remove で元の行を消してください（--confirmed を付ける前に、消す行をユーザーに確かめる）。残った見出しの扱いはユーザーに伝えてください。" % "」「".join(odd)})
+                      "この版には見出しの名前を直す操作が無く、move もこの見出しの項目は動かせません。正式名の見出しへ移してよいかをユーザーに確かめ、よいと言われた項目は add で正式名の見出しへ足し直し（status の time・chip・note を写し、重要タスクなら set-crit で付け直す）、remove で元の行を消してください（--confirmed を付ける前に、消す行をユーザーに確かめる）。残った見出しの扱いはユーザーに伝えてください。" % "」「".join(odd)})
     bad = []
     for it in items:
         block = "".join(lines[it["s"]:it["e"] + 1])
@@ -1364,7 +1355,6 @@ def build_sections(spec, nl, indent="  "):
             order.append(sec)
         by.setdefault(sec, []).append(it)
     out = []
-    crit_open = 0
     for k, sec in enumerate(order):
         check_text(sec, "セクション名")
         if sec.startswith(RESERVED_SECTIONS):
@@ -1382,11 +1372,7 @@ def build_sections(spec, nl, indent="  "):
             tm = check_time(it["time"]) if it.get("time") else None
             chip = check_chip(it["chip"]) if it.get("chip") else default_chip(sec)
             crit = bool(it.get("crit"))
-            if crit and chip != "done" and _canon_section(sec) in ("今日の予定", "今日中"):
-                crit_open += 1
             out += build_item(indent, nl, title, note, chip, crit, tm)
-    if crit_open >= 2:
-        raise OpError("判断ゲート（crit）が今日の予定・今日中に %d 件あります。1日1件の決まりなので、1件に絞って spec を直してください。" % crit_open)
     return out
 
 
@@ -1979,7 +1965,7 @@ def build_parser():
     sp.add_argument("--item")
     sp.add_argument("--title")
     sp.add_argument("--note")
-    sp = add("set-crit", "判断ゲートを付ける（on）／外す（off）。項目の crit と「判断ゲート」のチップの両方を付け外しする")
+    sp = add("set-crit", "重要タスクを付ける（on）／外す（off）。項目の crit と「重要タスク」のチップの両方を付け外しする")
     sp.add_argument("--item")
     sp.add_argument("value", nargs="?", help="on か off")
     sp = add("set-time", "項目の時刻を替える（--time none で時刻を外す）")

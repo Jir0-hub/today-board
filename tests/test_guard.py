@@ -396,6 +396,17 @@ class TestPost(Sandbox):
         self.assertIsNone(self.post())
         self.assertEqual(self.read(), after)
 
+    def test_old_chip_board_is_legit(self):
+        """古い表示名のチップ（class は同じ crit）が残った板でも、board_edit.py の書き込みは戻されない。"""
+        self.write(self.read().decode("utf-8").replace("重要タスク", "判断ゲート"))
+        self.pre()
+        rc, _ = self.be("set-chip", "--item", "作業B", "--chip", "done")
+        self.assertEqual(rc, 0)
+        after = self.read()
+        self.assertIn("判断ゲート".encode("utf-8"), after)
+        self.assertIsNone(self.post())
+        self.assertEqual(self.read(), after)
+
     def test_deck_record_is_legit(self):
         self.pre()
         rc, _ = self.be("add", "--section", "今日中", "--title", "足した")

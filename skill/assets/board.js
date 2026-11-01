@@ -722,7 +722,7 @@
     // 書き手（Claude）がスキルの手順を通さずに書いた板では、項目の入れ子や DECK マーカーの欠落が
     // 起きうる。どちらも画面は普通に描かれるが、Deck の走査はそこで止まり、以降の項目は通知音・
     // D&D・進捗の対象から黙って外れる（Deck の _scan_board）。中身は直さず、見える形で知らせる。
-    // 2026-10-28 に、判断ゲートが2件以上あること・正式名に似たセクション名・Deck v2.4 が崩れる前の版を
+    // 2026-10-28 に、正式名に似たセクション名・Deck v2.4 が崩れる前の版を
     // 退避したことも、同じ知らせ（見出し語「ボードの点検」）にまとめた。
     // 形は読み込みの間に変わらないので、読み込み時に1回だけ見る。
     // START の後ろに END があるときだけ「そろっている」とする（2026-10-29。deckRegionElement と同じ見方。
@@ -765,29 +765,7 @@
         msgs.push('Deck がボードの形の崩れに気づき、崩れる前の版を board.html と同じフォルダの ' + lgFile
           + ' に残しました（Deck は板を直しません）。');
       }
-      // ---- 判断ゲートの数・セクション名（2026-10-28 新設・どちらも直さずに知らせるだけ） ----
-      // 手書きの項目が属するセクション（直前の見出し）の名前。見出しより前なら ''
-      function sectionOf(node) {
-        var n = node.previousElementSibling;
-        while (n) {
-          if (n.classList && n.classList.contains('section-label')) return (n.textContent || '').trim();
-          n = n.previousElementSibling;
-        }
-        return '';
-      }
-      // 判断ゲート（crit）は1日1件の決まり（skill/SKILL.md create モード4）。まだ決まっていない最重要の判断を
-      // 1件にする決まりなので、済になったものは数えない。今日の予定・今日中の手書きの項目だけを数える
-      // （自動収集カード data-sid と、引き継ぎで残った明日以降などは数えない）
-      var crit = 0;
-      Array.prototype.forEach.call(document.querySelectorAll('.item.crit:not([data-sid])'), function (it) {
-        if (it.querySelector('.chip.done')) return;
-        var s = sectionOf(it);
-        if (s.indexOf('今日の予定') === 0 || s.indexOf('今日中') === 0) crit++;
-      });
-      if (crit >= 2) {
-        msgs.push('判断ゲート（最重要）が今日の予定・今日中に ' + crit + ' 件あります。1日1件に絞る決まりです'
-          + '（全部を強調すると何も強調されないため）。');
-      }
+      // ---- セクション名（2026-10-28 新設・直さずに知らせるだけ） ----
       // セクション名が正式名に似ているのに正式名でないもの。誤って出すと邪魔になるので、範囲は狭く取る——
       // 正式名の語と組み合わさった形で、見出しの全体がそれだけ（後ろに括弧書きが付くのは可）のものに限る:
       //   ①「本日」「きょう」「今日」＋（「の」）＋「予定」「中」「タスク」「やること」
@@ -1445,7 +1423,7 @@
     function paint(el, c) {
       el.classList.add('plan-linked');
       if (el.classList.contains('crit')) {
-        // 判断ゲートの赤い左バーは維持し、残り3辺だけ着色する
+        // 重要タスクの赤い左バーは維持し、残り3辺だけ着色する
         el.style.borderTopColor = c;
         el.style.borderRightColor = c;
         el.style.borderBottomColor = c;
