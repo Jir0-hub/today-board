@@ -206,6 +206,12 @@ class Sandbox(unittest.TestCase):
         self.assertEqual(out["decision"], "block")
         self.assertIn("元に戻しました", out["reason"])
 
+    def assertRestored(self, before):
+        """restore の後の板が before と同じか。restore も #upd-time を今の時刻にする（分をまたぐと差が出る）ので、その中身だけを外して比べる。"""
+        def blank(raw):
+            return gd._UPD_TIME_RE.sub(r"\1\3", raw.decode("utf-8"), count=1)
+        self.assertEqual(blank(self.read()), blank(before))
+
 
 # ================================================================ 小片と make_hooks.py
 
@@ -494,7 +500,7 @@ class TestPost(Sandbox):
         self.assertEqual(self.pres(), [])
         rc, res = self.be("restore", "--from", "history/" + bt[0], "--confirmed")     # T-R と通しで
         self.assertEqual(rc, 0, res)
-        self.assertEqual(self.read(), before)
+        self.assertRestored(before)
 
     def test_old_deck_notifies(self):
         os.makedirs(os.path.join(self.data, "deck"))
@@ -861,7 +867,7 @@ class TestRaces(Sandbox):
         self.assertEqual(self.pres(), [])
         rc, res = self.be("restore", "--from", "history/" + saved[0], "--confirmed")
         self.assertEqual(rc, 0, res)
-        self.assertEqual(self.read(), before)
+        self.assertRestored(before)
 
     def test_failed_replace_saves_snapshot(self):
         """M2: os.replace を使い切って戻せなかったときも、控えの本文を before-tool へ退避して restore で戻せる。"""
@@ -1069,7 +1075,7 @@ class TestRescan(Sandbox):
         self.assertEqual(self.read() != before, True)
         rc, res = self.be("restore", "--from", "history/" + name, "--confirmed")
         self.assertEqual(rc, 0, res)
-        self.assertEqual(self.read(), before)
+        self.assertRestored(before)
 
     def test_content_after_10min_notifies(self):
         self._notify_case(11 * 60, False)

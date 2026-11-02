@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Deck v2.6 — Claude Code 全セッション常駐ウォッチャー。
+"""Deck v2.7 — Claude Code 全セッション常駐ウォッチャー。
 
 ~/.claude/projects/<エンコード済みパス>/<session-id>.jsonl（セッション transcript）を
 監視し、today-board の board.html 内
@@ -15,8 +15,8 @@
 <footer> がちょうど1つのときにその直前へ足す〔v2.2〕）、引き継いだボードの印（<div class="board"> の data-tb-rolled / data-tb-rolled-fp）を
 手書き部分が Deck 以外の書き手で変わったときに外すこと、印の無い板に残った data-tb-rolled-fp を外すこと、
 D&D の反映で data-tb-rolled-fp を書き直すこと（v2.3）。
-タスクの文言は書き換えない。以上は board.html の中の話で、board.html の外では deck/ の state.json・sound.json・
-watcher.log のほか、board.html と同じフォルダの history/（日付の切り替えで退避した元のボードと、形が崩れる前の版・v2.4）・
+タスクの文言は書き換えない。以上は board.html の中の話で、board.html の外では deck/ の state.json・sound.json（--board で既定以外のボードを
+指したときはボードと同じフォルダ・v2.7）・watcher.log のほか、board.html と同じフォルダの history/（日付の切り替えで退避した元のボードと、形が崩れる前の版・v2.4）・
 .guard/（書き込みの記録と format.json・v2.6）・state.json の date・board.css / board.js / cat.png（スキルの assets/ と中身が違うものだけ・v2.2 / v2.3）と、
 多重起動ガードのロックファイル（%TEMP% の下の today-board-deck-locks フォルダ・v1.9）に書く。
 
@@ -120,6 +120,10 @@ v2.6: board.html の書き手をスキルの scripts/board_edit.py に限るし�
   して、「保存できなかった」と知らせた移動を後から書かないため）。
   ⑤D&D の反映を書けなかったとき（③を使い切った・読み直しが読めなかった・②を試し切った・記録を書けなかった・④の時間切れ）は、
   board.js へ 500・409・503 のいずれかを返し、watcher.log に残す。board.js は localStorage に保存したうえで、画面に知らせを出す。
+
+v2.7: --board で既定以外のボードを指した Deck は、sound.json をボードと同じフォルダに置く（2026-11-02）。v2.6 までは
+  スクリプトと同じフォルダのものを使ったので、本番の deck/ の deck_watcher.py を試験用のボードに向けると、試験用のボードで開いた
+  ページの設定が本番の sound.json に書かれた。既定のボードを見る Deck の動きは変わらない。
 
 制約: Python 標準ライブラリのみ・単一ファイル・外部ネットワーク通信なし
 （127.0.0.1 限定の受信ポート 1 つのみ。8737〜8746 のうち空いている 1 つ・v2.1）・
@@ -3547,7 +3551,7 @@ def _clean_overrides(mapping):
 
 
 class SoundStore:
-    """board.js から中継されるボード側の状態を保持する。
+    """通知音の設定と、その発火に使う状態を保持する（通知音の設定の正はここで、値は⚙の操作で board.js から受け取る）。
 
     内訳は ①通知音の設定（ON/OFF・音種）②当日の発火済みキー ③✎ による時刻の手動上書き。
     ①③は HTTP スレッド、②は監視ループスレッドが書くため、ロックで保護する。
@@ -3915,6 +3919,13 @@ def _log_rejected(method, route, reason):
         _reject_log_state["count"] = 0
     log("受信を拒否: %s %s → 403 %s（直近 %d 件）"
         % (method, route, reason, count))
+
+
+def sound_state_path(board_path, is_default_board):
+    """sound.json の場所。既定のボードはスクリプトと同じフォルダ、それ以外はボードと同じフォルダ（v2.7）。"""
+    if is_default_board:
+        return SOUND_STATE_PATH
+    return os.path.join(os.path.dirname(os.path.abspath(board_path)), "sound.json")
 
 
 class _BoardMoveHandler(BaseHTTPRequestHandler):
@@ -4425,7 +4436,7 @@ def main(argv):
 
     # 常駐監視モードのみ受信サーバを起動（--once では起動しない）。
     # バインド失敗（ポート使用中等）でも None が返るだけで監視は継続する。
-    sound_store = SoundStore()
+    sound_store = SoundStore(sound_state_path(board_path, is_default_board))
     token = new_deck_token()  # 起動ごと。ログにもファイルにも board.html 以外には書かない
     move_server = start_move_server(board_path, sound_store, token=token)
     deck_key = (deck_key_element(move_server.server_address[1], token)

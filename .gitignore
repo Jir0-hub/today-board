@@ -19,3 +19,5 @@ __pycache__/
 # ログ・一時ファイル
 *.log
 *.tmp
+deck/sound.json
+deck/state.json

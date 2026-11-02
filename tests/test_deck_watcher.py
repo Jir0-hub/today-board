@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""deck/deck_watcher.py v2.6 の試験（T-D：書き込みの記録・読み直しの比較・os.replace の再試行・書けなかった D&D の応答）。
+"""deck/deck_watcher.py v2.6 以降の試験（T-D：書き込みの記録・読み直しの比較・os.replace の再試行・書けなかった D&D の応答・sound.json の置き場所）。
 
 実行: python -m unittest discover -s tests -v   （リポジトリの直下で）
 すべて一時フォルダで行う。deck_watcher.py は一時フォルダへ写してから読み込む（watcher.log・sound.json を写しの側に出すため）。
@@ -549,6 +549,52 @@ class TestReplaceRetry(DeckSandbox):
         finally:
             server.shutdown()
             server.server_close()
+
+
+# ------------------------------------------------------------------ sound.json の置き場所（v2.7）
+
+class TestSoundStatePlace(DeckSandbox):
+    """本番のスクリプト相当の配置（HOME/.claude/today-board/deck/）から --board で別のボードを指しても、
+    そのフォルダの sound.json に触らない。main の配線を見る（受信も監視も起動しない）。"""
+
+    def run_main(self, default_board, argv):
+        seen = {}
+
+        def fake_server(board_path, sound_store=None, port=None, token=None):
+            seen["path"] = sound_store._path
+            return None
+
+        saved = (dw.DEFAULT_BOARD_PATH, dw.SOUND_STATE_PATH,
+                 dw.start_move_server, dw.watch_loop, dw.acquire_single_instance_lock)
+        prod_sound = os.path.join(self.dir, "prod", "deck", "sound.json")
+        os.makedirs(os.path.dirname(prod_sound))
+        dw.DEFAULT_BOARD_PATH = default_board
+        dw.SOUND_STATE_PATH = prod_sound
+        dw.start_move_server = fake_server
+        dw.watch_loop = lambda *a, **k: None
+        dw.acquire_single_instance_lock = lambda p: (True, None)
+        try:
+            self.assertEqual(dw.main(["deck_watcher.py"] + argv), 0)
+        finally:
+            (dw.DEFAULT_BOARD_PATH, dw.SOUND_STATE_PATH,
+             dw.start_move_server, dw.watch_loop, dw.acquire_single_instance_lock) = saved
+        return seen["path"], prod_sound
+
+    def common(self):
+        return ["--projects-dir", self.dir, "--state", os.path.join(self.dir, "st.json")]
+
+    def test_other_board_uses_board_folder(self):
+        path, prod = self.run_main(os.path.join(self.dir, "prod", "board.html"), ["--board", self.board] + self.common())
+        self.assertEqual(os.path.normcase(path), os.path.normcase(os.path.join(self.dir, "sound.json")))
+        self.assertNotEqual(os.path.normcase(path), os.path.normcase(prod))
+
+    def test_default_board_stays_in_script_folder(self):
+        path, prod = self.run_main(self.board, self.common())
+        self.assertEqual(path, prod)
+
+    def test_explicit_default_board_stays_in_script_folder(self):
+        path, prod = self.run_main(self.board, ["--board", self.board] + self.common())
+        self.assertEqual(path, prod)
 
 
 # ------------------------------------------------------------------ 同時書き込み（別フォルダの Deck の写し）

@@ -2,17 +2,18 @@
 
   // ---- 発行済みボード判定（Deck への書き込みガード・2026-08-05 新設） ----
   // スキルのテンプレ（board-template.html）やアーカイブのコピーをブラウザで開くと、
-  // そのブラウザ／オリジンの localStorage 既定値がそのまま Deck へ push され、本番の
-  // 通知音設定（deck/sound.json）と時刻上書きを上書きしてしまう。
+  // そのブラウザ／オリジンの localStorage の値が Deck へ送られ、本番の通知音設定（deck/sound.json）と
+  // 時刻上書きを上書きしてしまった（通知音は 2026-11-02 から⚙を操作したときだけ送る。✎ の時刻は
+  // 今日の記録があれば起動時にも送る。⚙の操作も含めて書き込みを止めるので、この判定は要る）。
   // 2026-08-05 実測: テンプレを開いた直後に watcher.log へ「通知音設定: 有効=OFF」が記録され、
   // 次の本番タブの push（5分周期）まで通知音が黙った（11:31:51→11:33:03・11:43:37→11:48:03）。
   // D&D 移動の POST /board/move に至っては HTML 正本そのものを書き換える。
   // そこで「実際に発行されたボードとして開かれたときだけ書き込む」判定をここで一度だけ行い、
   // 書き込み系の共通出口（deckPost と persistMove の fetch）でまとめてガードする。
   // 呼び出し側ごとに条件を置くと、書き込み経路が増えたときに必ず漏れるため1か所に集約する。
-  // 読み取り系（GET /notifications ＝ Deck の生死判定）はガードしない。副作用が無く、
-  // テンプレを開いたときも「監視ねこ」の表示は従来どおり動かしたいため。
-  // 判定できないときは書かない（fail-closed）。書けずに困るのは本番タブの5分後の再送で復旧するが、
+  // 読み取り系（GET /notifications ＝ Deck の生死判定・GET /sound/config ＝⚙の表示）はガードしない。
+  // Deck に副作用が無く、テンプレを開いたときも「監視ねこ」の表示は従来どおり動かしたいため。
+  // 判定できないときは書かない（fail-closed）。書けずに困るのは今日のボードで操作し直せば済むが、
   // 誤って書いた場合は本番設定が壊れて気づけないため、倒す向きを「書かない」側に固定する。
   var TB_LIVE = (function () {
     // ① 未置換のプレースホルダが残っていれば、発行前のテンプレ。
@@ -265,7 +266,8 @@
   (function () {
     var LS = {
       get: function (k, d) { try { var v = localStorage.getItem('tb:' + k); return v === null ? d : v; } catch (e) { return d; } },
-      set: function (k, v) { try { localStorage.setItem('tb:' + k, v); } catch (e) {} }
+      set: function (k, v) { try { localStorage.setItem('tb:' + k, v); } catch (e) {} },
+      del: function (k) { try { localStorage.removeItem('tb:' + k); } catch (e) {} }
     };
     var dateKey = ((document.querySelector('.date') || {}).textContent || '').trim();
 
@@ -317,19 +319,112 @@
     // 触らない」ので、ページ内再生では構造的に鳴らない。
     // そこで設定UIはこの⚙パネルのまま維持し、値と試聴要求だけを Deck へ送る。
     // 時刻トリガーの判定と発音は Deck が board.html を直接読んで行う（board.js は鳴らさない）。
-    // Deck 未起動・未対応・応答なしのときは黙って失敗する（音は鳴らないが UI は壊さない）。
-    // 片道通知（応答を見ない）。書き込み系はここを必ず通るので、発行済みボード判定を
-    // この一点でガードする（/sound/config・/board/times・/notifications/ack が対象）。
+    // Deck 未起動・未対応・応答なしのときは⚙の通知音を操作できない形にする（音は鳴らないが UI は壊さない）。
+    // 書き込み系はここを必ず通るので、発行済みボード判定をこの一点でガードする
+    // （/sound/config・/board/times・/notifications/ack が対象）。止めたときは undefined、Deck へ
+    // 送ったときは応答の Promise を返す（応答を見ない呼び出し側は使わない）。
     function deckPost(path, obj) {
       if (!TB_LIVE.live) { tbBlockWrite(path); return; }
       var p = deckFetch(path, { method: 'POST', body: JSON.stringify(obj) });
       if (p) p.catch(function () {});
+      return p;
     }
-    function pushSoundConfig(test) {
-      deckPost('/sound/config', {
-        enabled: LS.get('sound', '0') === '1',
-        type: LS.get('soundType', 'std'),
-        test: !!test
+    // ---- 通知音の設定（ON/OFF・音種。持ち主は Deck だけ・2026-11-02 ユーザー決定） ----
+    // ブラウザには持たない。読み込みでは GET で読んで表示するだけで、送るのは⚙を操作したときだけ。
+    // ブラウザが持つと、開いただけで既定値や古い値が Deck を上書きする（2026-08-08 に検証用のブラウザが
+    // 本番の通知音を ON→OFF に書き換えた。Deck からは本物のタブと区別できない）。
+    // soundCfg＝最後に Deck から読んだ値（null＝読めていない）。古い値を本物に見せないよう、読めない間は
+    // 値を出さず、操作もできない形にする。Deck の応答が戻れば pollNotifications から読み直す。
+    var soundCfg = null;
+    var soundLoaded = false;   // 一度でも結果が出たか（最初の応答を待つ間は知らせを出さない）
+    var soundBusy = false;     // 操作の途中（読む→送る）
+    var soundReading = false;
+    var soundError = '';
+    var SOUND_MSG_NO_DECK = '通知音の設定は Deck が持っています。Deck から設定を読めないため、いまは確認も変更もできません。Deck が止まっている、この環境に Deck が無い、このボードは Deck が見ているものではない、Deck を起動し直した直後で読み直しを待っている、などの場合です（状態は監視ねこの欄に出ます）。';
+    var SOUND_MSG_NOT_TODAY = '今日のボードではないため、通知音の設定は変更できません。今日のボードを開いて変更してください。';
+    var SOUND_MSG_NOT_TODAY_VALUE = SOUND_MSG_NOT_TODAY + '表示は Deck のいまの設定です。';
+    var SOUND_MSG_FAILED = 'Deck に届かなかった可能性があります。通知音の操作は反映されていないことがあります。';
+    function soundRead(done) {
+      var p = deckFetch('/sound/config');
+      if (!p) { done(null); return; }
+      p.then(function (res) {
+        return res && res.ok ? res.json() : null;
+      }).then(function (d) {
+        var ok = d && d.ok === true && typeof d.enabled === 'boolean' && typeof d.type === 'string';
+        done(ok ? { enabled: d.enabled, type: d.type } : null);
+      }, function () { done(null); });
+    }
+    function renderSound() {
+      var can = !!soundCfg && TB_LIVE.live && !soundBusy;
+      var t = document.getElementById('sound-toggle');
+      if (t) {
+        t.textContent = soundCfg ? (soundCfg.enabled ? 'ON' : 'OFF') : (soundLoaded ? '—' : '…');
+        t.classList.toggle('on', !!soundCfg && soundCfg.enabled);
+        t.disabled = !can;
+      }
+      Array.prototype.forEach.call(document.querySelectorAll('[data-sound]'), function (b) {
+        b.classList.toggle('active', !!soundCfg && b.getAttribute('data-sound') === soundCfg.type);
+        b.disabled = !can;
+      });
+      var st = document.getElementById('sound-test');
+      if (st) st.disabled = !can;
+      var note = document.getElementById('sound-note');
+      if (note) {
+        var msg = !TB_LIVE.live ? (soundCfg ? SOUND_MSG_NOT_TODAY_VALUE : SOUND_MSG_NOT_TODAY)
+          : !soundLoaded ? ''
+          : !soundCfg ? SOUND_MSG_NO_DECK
+          : soundError;
+        note.textContent = msg;
+        note.hidden = !msg;
+      }
+    }
+    // 読めたら失敗の知らせを消す。keepError は失敗の直後の読み直し用（値は映すが、知らせは残す）
+    function soundRefresh(keepError) {
+      if (soundBusy || soundReading) return;
+      soundReading = true;
+      soundRead(function (cur) {
+        soundReading = false;
+        if (soundBusy) return;
+        soundCfg = cur;
+        soundLoaded = true;
+        if (cur && !keepError) soundError = '';
+        renderSound();
+      });
+    }
+    // ⚙の操作。別のブラウザが変えた値を古い表示で上書きしないよう、送る直前に読み、変えない項目は読んだ値で
+    // 埋めて送る（Deck は欠けた値を OFF/std として保存する）。読めなければ送らない。
+    // change は読んだ値を受けて送る値を返す。値が変わらず試聴でもなければ送らない。
+    // 表示は応答を受けてから変える。応答が得られなければ Deck が受けたかは分からないので、読み直して映し、知らせを出す。
+    function soundOperate(change, test) {
+      if (soundBusy || !TB_LIVE.live) return;
+      soundBusy = true;
+      soundError = '';
+      renderSound();
+      soundRead(function (cur) {
+        soundCfg = cur;
+        soundLoaded = true;
+        if (!cur) { soundBusy = false; renderSound(); return; }
+        var next = change(cur);
+        if (!test && next.enabled === cur.enabled && next.type === cur.type) {
+          soundBusy = false;
+          renderSound();
+          return;
+        }
+        function failed() { soundBusy = false; soundError = SOUND_MSG_FAILED; renderSound(); soundRefresh(true); }
+        var p = deckPost('/sound/config', { enabled: next.enabled, type: next.type, test: !!test });
+        if (!p) { failed(); return; }
+        p.then(function (res) {
+          return res && res.ok ? res.json() : null;
+        }).then(function (d) {
+          if (!d || d.ok !== true) { failed(); return; }
+          // 応答の形が崩れていれば、送った値を表示する
+          soundCfg = {
+            enabled: typeof d.enabled === 'boolean' ? d.enabled : next.enabled,
+            type: typeof d.type === 'string' ? d.type : next.type
+          };
+          soundBusy = false;
+          renderSound();
+        }, failed);
       });
     }
     // ✎ の時刻上書きは localStorage にしかなく Deck からは見えない。送らないと Deck は
@@ -400,6 +495,9 @@
       if (st === 'up') { deckAliveAt = new Date(); deckDownSince = null; }
       else if (!deckDownSince) deckDownSince = new Date();
       deckState = st;
+      // ⚙の通知音も Deck の応答に合わせる（読めない間は操作できない。戻ったら読み直す）
+      if (st === 'up') { if (!soundCfg) soundRefresh(); }
+      else if (!soundBusy && (soundCfg || !soundLoaded)) { soundCfg = null; soundLoaded = true; renderSound(); }
       renderDeckStatus();
       renderBoardNotice();
     }
@@ -1132,7 +1230,7 @@
     // 隠す規則そのものは board.css 側（:root.tb-hide-done .item.done-item:not([data-sid])）にある。
     // ここは「ルート要素のクラスを LS に合わせる」「⚙の件数を書く」「済だけになった
     // セクションに要約行を1本出す」の3つだけを行う。Deck へは何も送らない
-    // （deckPost / pushSoundConfig / pushTimeOverrides / persistMove を呼ばない）。
+    // （deckPost / soundOperate / pushTimeOverrides / persistMove を呼ばない）。
     // ルート要素は board.html に存在しない（テンプレに <html> タグが無く、ブラウザが合成する）ため、
     // Claude の update とも Deck の書き換えとも構造上ぶつからない。data-theme と同じ置き場。
     // セクションの走査は renderDeckStatus() と同じ「見出しから nextSibling を次の見出しまで
@@ -1200,7 +1298,10 @@
     function initSettings() {
       var panel = document.getElementById('settings-panel');
       var sBtn = document.getElementById('settings-btn');
-      if (sBtn && panel) sBtn.addEventListener('click', function () { panel.hidden = !panel.hidden; });
+      if (sBtn && panel) sBtn.addEventListener('click', function () {
+        panel.hidden = !panel.hidden;
+        if (!panel.hidden) soundRefresh();  // 別のブラウザが変えた値を、開いたときに映す
+      });
       var tBtn = document.getElementById('theme-btn');
       if (tBtn) tBtn.addEventListener('click', function () {
         var order = ['auto', 'light', 'dark'];
@@ -1222,7 +1323,6 @@
         render();
       }
       bindToggle('popup-toggle', 'popup', '1');
-      bindToggle('sound-toggle', 'sound', '0', function () { pushSoundConfig(false); });
       // ポップアップの消え方（触るまで残す／30秒で自動）。既定は「触るまで残す」
       function renderToastMode() {
         var cur = LS.get('toastMode', 'stay');
@@ -1237,22 +1337,52 @@
       Array.prototype.forEach.call(document.querySelectorAll('.swatch'), function (b) {
         b.addEventListener('click', function () { LS.set('crit', b.getAttribute('data-crit')); applyCritColor(); });
       });
-      function renderSoundType() {
-        var cur = LS.get('soundType', 'std');
-        Array.prototype.forEach.call(document.querySelectorAll('[data-sound]'), function (b) {
-          b.classList.toggle('active', b.getAttribute('data-sound') === cur);
-        });
-      }
-      Array.prototype.forEach.call(document.querySelectorAll('[data-sound]'), function (b) {
-        b.addEventListener('click', function () { LS.set('soundType', b.getAttribute('data-sound')); renderSoundType(); pushSoundConfig(true); });
+      // 通知音の設定。以前の版がブラウザに残した値は読まずに消す（Deck の値が正。移行はしない＝2026-11-02
+      // ユーザー決定）。残すと、以前の版の board.js に戻したときにその古い値が Deck へ送られるため。
+      LS.del('sound');
+      LS.del('soundType');
+      LS.del('soundFromDeck');
+      var sToggle = document.getElementById('sound-toggle');
+      if (sToggle) sToggle.addEventListener('click', function () {
+        if (!soundCfg) return;
+        var want = !soundCfg.enabled;  // 見えている値の反対にする（読み直した値の反対にしない）
+        soundOperate(function (cur) { return { enabled: want, type: cur.type }; }, false);
       });
+      // 音種のボタンは選んで試聴する。いまの音種を押しただけなら設定は変わらない
+      Array.prototype.forEach.call(document.querySelectorAll('[data-sound]'), function (b) {
+        b.addEventListener('click', function () {
+          var type = b.getAttribute('data-sound');
+          soundOperate(function (cur) { return { enabled: cur.enabled, type: type }; }, true);
+        });
+      });
+      // 試聴は読んだ値をそのまま送るので、設定は変わらない
       var sTest = document.getElementById('sound-test');
-      if (sTest) sTest.addEventListener('click', function () { pushSoundConfig(true); });
-      renderSoundType();
-      // 起動時にも現在値を Deck へ送る。Deck 側だけ再起動した場合や、Deck 停止中に
-      // 設定を変えた場合でも、次のリロード（5分以内）で設定が揃う。
-      pushSoundConfig(false);
-      pushTimeOverrides();
+      if (sTest) sTest.addEventListener('click', function () {
+        soundOperate(function (cur) { return cur; }, true);
+      });
+      // 発行済みの板の説明文は日付の切り替えでも引き継がれるので、表示のときに今の文へ直す（HTML の正本は変えない）
+      var sDesc = panel && panel.querySelector('.set-note:not(#sound-note)');
+      if (sDesc && sDesc.textContent.indexOf('通知音の設定は Deck に保存され') < 0) {
+        sDesc.textContent = sDesc.textContent.replace('設定はこのブラウザに保存されます。',
+          '通知音の設定は Deck に保存され、どのブラウザで開いても同じです（Deck が動いていないときは変更できません）。それ以外の設定はこのブラウザに保存されます。');
+      }
+      var sAnchor = sTest || document.querySelector('[data-sound]') || sToggle;
+      if (sAnchor && panel) {
+        var sNote = document.createElement('div');
+        sNote.id = 'sound-note';
+        sNote.className = 'set-note';
+        sNote.hidden = true;
+        var sRow = sAnchor.closest('.set-row');
+        if (sRow) sRow.parentNode.insertBefore(sNote, sRow.nextSibling);
+        else panel.appendChild(sNote);
+      }
+      renderSound();
+      soundRefresh();
+      // 時刻の上書きは、このブラウザに今日の記録があるときだけ起動時にも送る。Deck 側だけ再起動した場合や、
+      // Deck 停止中に変えた場合でも、次のリロード（5分以内）で揃う。上書きを全部外すと
+      // `ovr:<日付>` は {} として残るので（✎ の処理）、空の地図が届いて Deck も元の時刻へ戻る。記録の無い
+      // ブラウザが空の地図を送ると、ほかのブラウザで付けた上書きまで消してしまう。
+      if (LS.get('ovr:' + dateKey, null) !== null) pushTimeOverrides();
       var uBtn = document.getElementById('unhide-all');
       if (uBtn) uBtn.addEventListener('click', function () { LS.set('hiddenSids', '[]'); applyHidden(); });
       // 表示フィルタ行（済タスクを隠す）。renderOrderUI と同じく実行時に注入する——
@@ -1267,7 +1397,7 @@
           + '進捗の N / M とバーは隠しても変わりません（進捗は事実であって表示設定ではないため）。';
         hdRow.innerHTML = '<span>済タスクを隠す（非表示中 <span id="hd-count">0</span>件）</span>'
           + '<button type="button" id="hd-toggle">OFF</button>';
-        panel.insertBefore(hdRow, panel.querySelector('.set-note') || null);
+        panel.insertBefore(hdRow, panel.querySelector('.set-note:not(#sound-note)') || null);
       }
       // × で隠した済タスクの復帰行。hd 行と同じく実行時に注入する（board-template.html へ
       // 静的に書くと、既に発行済みの今日の board.html には現れないため）。
@@ -1282,7 +1412,7 @@
           + '進捗の N / M とバーは隠しても変わりません。';
         thRow.innerHTML = '<span>× で隠した済タスク（<span id="th-count">0</span>件）</span>'
           + '<button type="button" id="th-reset">すべて戻す</button>';
-        panel.insertBefore(thRow, panel.querySelector('.set-note') || null);
+        panel.insertBefore(thRow, panel.querySelector('.set-note:not(#sound-note)') || null);
       }
       var thBtn = document.getElementById('th-reset');
       if (thBtn) thBtn.addEventListener('click', function () {
@@ -1581,7 +1711,7 @@
         var row = document.createElement('div');
         row.className = 'set-row';
         row.innerHTML = '<span>セクション表示順</span><span id="sec-order-rows" class="order-ctl"></span>';
-        panel.insertBefore(row, panel.querySelector('.set-note') || null);
+        panel.insertBefore(row, panel.querySelector('.set-note:not(#sound-note)') || null);
         host = row.querySelector('#sec-order-rows');
       }
       // 既知セクションに限定しない。Deckが出すセクション（監視ねこ等）も
