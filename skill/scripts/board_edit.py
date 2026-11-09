@@ -1,15 +1,46 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""board_edit.py v1.0 — きょうのボード（board.html）を書き換える専用のスクリプト。
+"""board_edit.py v1.11 — きょうのボード（board.html）を書き換える専用のスクリプト。
 
 Claude は board.html を直接書かず、このスクリプトに操作を渡す。スクリプトが HTML を機械で書き換え、
-書く前に出来上がりの形を検査し（K1〜K9 に当たれば書かない・K11・K12 は書いて警告する）、
+書く前に出来上がりの形を検査し（K1〜K9 に当たれば書かない・K11〜K15 は書いて警告する）、
 書く前に .guard/auth/ へ書き込みの記録を残してから、一時ファイル→os.replace で置き換える。
 置き換える直前に板を読み直し、読んだときと違えば（ほかの書き手が書いた）記録を消して最初からやり直す。
 create は置き換える前の板を history/board-<日付>-before-create-<時刻>.html に、restore は戻す前の板を
 …-before-restore-… に残す。config.json・state.json は読むだけで書かない。
 
-操作: status / create / add / set-chip / edit / set-crit / set-time / move / remove / restore
+操作: status / create / add / set-chip / edit / set-crit / set-time / set-due / move / remove / restore / close-time（v1.10） /
+      deck-snap / deck-wait（v1.2。Deck を起動し直す前後の確かめ。どちらも板を読むだけで書かない）
+      move --create-section（v1.3。行き先の見出しが無ければ add --create-section と同じ位置に作る）
+      create の dropped_times（v1.4。H:MM でない時刻が消えるか変わる行。今日の板では --confirmed が要る）
+      v1.5: 「明日以降」の行で、時刻の欄が実施日の時刻と違う（H:MM でも）行も dropped_times に出す。
+      set-due・set-time はこの食い違いを作らない（同じ時刻なら書く）
+      v1.6: move・D&D で今日の側から「明日以降」へ戻してできた食い違いを、警告 K14 で知らせる（status と書き込みの出力の warnings）
+      v1.7: 行の時刻を1つにする。set-time・set-due・add・create は時刻の欄と実施日の時刻を同じ値にし（set-due・set-time が
+      食い違いで断るのはやめた）、move は印の有無・実施日の前かによらず同じ形にする（Deck v2.11 の D&D と同じ）。
+      今日の側へ移した行・今日の側に書く行の実施日は今日にし、元の実施日を due_from（data-due-from）に残す（status・add --due-from・
+      set-due --due-from・spec の due_from）。時刻の欄の無い行の set-time --time none は何もしない
+      v1.8: move が「明日以降」の行を今日の側へ動かして時刻の欄を外すとき、その時刻を data-orig-time に残さない（行の時刻は
+      data-due か data-due-from に残る。ただし H:MM でない時刻の欄の文字と、data-due-from が既にある行で時刻の欄の時刻がその時刻と違うときの時刻の欄の時刻は、どこにも残らない。data-orig-time は Deck v2.12 の日付の切り替えが
+      data-carried-from と組で書く）。
+      data-due-from の時刻は行の時刻にする（時刻の欄が H:MM ならそれ。v1.7 までは元の data-due そのまま）。Deck v2.12 の _due_moved_shape の写し
+      v1.9: add・set-due・create が今日の側の行の実施日を今日にするとき（roll_due_today）も、data-due-from（渡さなかったとき）の時刻を
+      行の時刻にする（Deck v2.12 の _carry_due_today と同じ。v1.8 までは渡された実施日そのまま）。
+      move で「明日以降」の先の日の行を今日の側へ動かすと、今日の行として扱う（実施日を今日にし、時刻の欄を外して flat、元の予定を
+      data-due-from に残し、一度移した印を付ける。add・set-due・create も今日の側の行の先の日の実施日を今日にする＝Deck v2.13 と同じ。
+      v1.8 までは先の日の行の日付も印も変えなかった）。
+      move で今日の予定・今日中の行を「明日以降」へ動かすときは --due（ユーザーに確かめた実施日か none＝未定）が要る。
+      実施日をその値にし、印と元の実施日を外す（_later_due_shape。Deck v2.13 の写し・2026-11-06 ユーザー決定）
+      v1.10: 行の鍵（status の key・--item の「時刻|タイトル」）の時刻の部分を、時刻の欄そのものの文字にする（_key_text。Deck v2.14 の写し。
+      閉じタグの無い時刻の欄〔<span class="time">0:00<div>…〕でも「0:00|タイトル」になり、Deck と board.js の鍵と合う。2026-11-06 ユーザー決定）。
+      status の time・K12 も同じ規則で読む。閉じタグの無い時刻の欄を警告 K15 で知らせ、close-time で閉じタグを補う
+      （set-time はその行を書き換えずに断る）。時刻の欄を外す操作（move・set-time --time none）は、欄の中にタイトル・補足・チップの箱・チップ・
+      項目があれば外さない（set-time --time none と、今日の側から「明日以降」への move は書かずに断る。「明日以降」から今日の側への move は、時刻の欄を残したまま、実施日の来た行に一度移した印だけを付けて動かす＝_mark_due_moved。_remove_time_elements・Deck v2.14 の写し。閉じタグが項目の終わりに置かれた形では、v1.9 は外して消した）
+      v1.11: 時刻の欄の時刻を読む所（K14・move の形作り・今日の予定の位置・create の時刻）を、行の鍵の時刻と同じ読み方にする（_time_text。
+      Deck v2.15 の写し。v1.10 までは _element_text で最初の同じ名前の閉じタグまで読み、閉じタグの無い欄では後ろのチップの文字まで入った）。
+      欄の範囲（_time_range）は、外側で開いていない閉じタグを読み飛ばし、p の欄を後ろの p を閉じる要素の手前で閉じる（Deck v2.15 と同じ）。
+      行の鍵（status の key）の時刻の部分もこの範囲で読むので、範囲の外に文字がある形（p の欄の後ろの div の文字・閉じタグの無い欄の
+      閉じる所より後ろの文字）では鍵が変わる（Deck v2.15・board.js の鍵と合う）
 使い方は `board_edit.py --help` と `board_edit.py <操作> --help`。
 
 - Python 3 標準ライブラリのみ・単一ファイル（Deck と同じ制約）
@@ -23,14 +54,17 @@ import argparse
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import sys
 import tempfile
 import time
+import urllib.parse
+from collections import Counter
 from datetime import date, datetime
 
-VERSION = "1.0"
+VERSION = "1.11"
 
 # ================================================================ Deck の写し（定数）
 
@@ -53,6 +87,8 @@ _UPD_TIME_RE = re.compile(r'(<span id="upd-time"[^>]*>)(.*?)(</span>)', re.S)
 _ITEM_OPEN_RE = re.compile(r'(<div class=")(item\b[^"]*)(")([^>]*)>')
 _TIME_OPEN_RE = re.compile(r'<(\w+)\b[^>]*?\bclass="(?:[^"]*\s)?time(?:\s[^"]*)?"[^>]*>')
 _FOOTER_LINE_RE = re.compile(r"^[ \t]*<footer\b")
+_DUE_VALUE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?: (\d{1,2}):(\d{2}))?$")
+_SPAN_CLASS_RE = re.compile(r'(<span\b[^>]*?\bclass=")([^"]*)("[^>]*>)([^<]*)(</span>)')
 
 
 # ================================================================ Deck の写し（関数）
@@ -179,11 +215,51 @@ def _element_text(block, cls_token):
     return None
 
 
+# 行の鍵の時刻の部分は、class を持つ開きタグの手前で読み終える（v2.14 / board_edit.py v1.10。下の _key_text）
+_KEY_STOP_RE = re.compile(r'<\w+\b[^>]*?\sclass\s*=', re.I)
+
+
+def _key_text(block, cls_token, stop_at_class=False):
+    """行の鍵に使う、class トークンに cls_token を持つ最初の要素の文字（v2.14 / board_edit.py v1.10 で新設。欄の範囲〔_time_range〕で読み終えるのは v2.15 / board_edit.py v1.11）。無ければ None。
+
+    鍵の作り方の正本。board.js の tbKeyText が同じ規則を DOM に当て、board_edit.py は写しを持つ（試験 T-P が一致を見る）。
+    要素の開きタグの後から、要素と同じ名前の最初の閉じタグの手前までを読む（_element_text と同じ）。stop_at_class が真なら、
+    その前に class を持つ開きタグがあればその手前で読み終え、欄の範囲（_time_range）が同じ名前の閉じタグより手前で終われば範囲の終わりで
+    読み終える（v2.15 / board_edit.py v1.11）。閉じタグも class を持つタグも無ければ範囲の終わりまで、範囲も決まらなければ block の終わりまで読む
+    （時刻の欄に使う。閉じタグの無い <span class="time">0:00<div><p class="task-title">… でも「0:00」になる＝閉じタグを
+    補っても鍵が変わらない。ブラウザは欄の中に後ろの要素を取り込むが、board.js も同じ所で読み終える）。
+    タグを除き、エンティティを復号し、改行を LF にそろえる（ブラウザは CR LF・CR を LF にして読むので、CR LF の板でも合わせる）。
+    """
+    for m in _CLASS_TAG_RE.finditer(block):
+        if cls_token in m.group(2).split():
+            end = block.find("</%s>" % m.group(1), m.end())
+            if stop_at_class:
+                # 欄の範囲（_time_range）の外は読まない＝閉じタグの無い欄は、ブラウザが閉じる所まで（v2.15 / board_edit.py v1.11。
+                # board.js の tbKeyText は DOM の欄を読むので同じになる）
+                r = _time_range(block, m)
+                if r is not None and (end == -1 or end > r[1]):
+                    end = r[1]
+                stop = _KEY_STOP_RE.search(block, m.end(), len(block) if end == -1 else end)
+                if stop:
+                    end = stop.start()
+                elif end == -1:
+                    end = len(block)
+            if end == -1:
+                return ""
+            text = html.unescape(_STRIP_TAGS_RE.sub("", block[m.end():end]))
+            return text.replace("\r\n", "\n").replace("\r", "\n")
+    return None
+
+
 def _item_key(block):
-    """item ブロックの key（board.js key() と同一定義）。"""
-    t = _element_text(block, "time")
-    ti = _element_text(block, "task-title")
-    return ((t or "") + "|" + (ti or "")).strip()
+    """item ブロックの key（board.js の key()・taskKey() と同一定義＝_key_text）。
+
+    「時刻の欄の文字（前後の空白を除く）|タイトルの文字」の前後の空白を除いたもの（v2.14。v2.13 までは時刻の欄を
+    _element_text で読み、空白を除かなかった）。
+    """
+    t = _key_text(block, "time", stop_at_class=True)
+    ti = _key_text(block, "task-title")
+    return ((t or "").strip() + "|" + (ti or "")).strip()
 
 
 def _recalc_progress(lines):
@@ -314,6 +390,85 @@ def board_structure_ok(lines):
     return [s for (s, _e, _n) in items] == starts
 
 
+def _time_open_unclosed(block):
+    """閉じていない時刻の欄の最初のもの（v2.14 / board_edit.py v1.10）。(開きタグの match, 読み終える位置) か、無ければ None。
+
+    閉じていない＝欄の開きタグの後、欄と同じ名前の最初の閉じタグより前に class を持つ開きタグがある形（v2.14 の _key_text が
+    そこで読み終えた形。v2.15 / board_edit.py v1.11 の _key_text は、欄の範囲〔_time_range〕がその開きタグより手前で終わる形では範囲の終わりで読み終える）。ブラウザはその要素を欄の中に取り込む。時刻の欄が2つ以上ある行では、どの欄も見る
+    （board.js の data-tb-unclosed・「ボードの点検」の⑥と同じ。board_edit.py の警告 K15 もこれで見る）。"""
+    for m in _CLASS_TAG_RE.finditer(block):
+        if "time" in m.group(2).split():
+            end = block.find("</%s>" % m.group(1), m.end())
+            stop = _KEY_STOP_RE.search(block, m.end(), len(block) if end == -1 else end)
+            if stop:
+                return m, stop.start()
+    return None
+
+
+def _time_close_at(block):
+    """閉じていない時刻の欄に閉じタグを補う位置（v2.14 / board_edit.py v1.10。board_edit.py の close-time と、Deck の日付の切り替え）。
+
+    (位置, タグ名) か、補えない理由: "none"（閉じていない欄が無い）・"div"（欄が div）・"after"（時刻の文字の後ろ、class を
+    持つタグより前にタグで囲んだ文字がある＝補うと欄の外へ出て鍵が変わる）・"text"（欄の始まりの直後に時刻の文字が無い）・
+    "count"（欄と同じ名前のタグの開きと閉じの数が、1つ足して合う形でない）。位置は時刻の文字（後ろの空白を除く）の直後。"""
+    hit = _time_open_unclosed(block)
+    if hit is None:
+        return "none"
+    m, stop = hit
+    tag = m.group(1)
+    if tag.lower() == "div":
+        return "div"
+    region = block[m.end():stop]
+    lt = region.find("<")
+    text = (region if lt == -1 else region[:lt]).rstrip()
+    if lt != -1 and html.unescape(_STRIP_TAGS_RE.sub("", region[lt:])).strip():
+        return "after"
+    if not text.strip():
+        return "text"
+    opens = len(re.findall(r"<%s\b[^>]*>" % re.escape(tag), block, re.I))
+    closes = len(re.findall(r"</%s\s*>" % re.escape(tag), block, re.I))
+    if opens != closes + 1:
+        return "count"
+    return m.end() + len(text), tag
+
+
+def _time_unclosed(block):
+    return _time_open_unclosed(block) is not None
+
+
+def block_close_time(blines):
+    """閉じタグの無い時刻の欄に閉じタグを補う（close-time・v1.10）。欄の時刻の文字（開きタグの直後から最初のタグの手前まで。
+    後ろの空白は含めない）の直後に </タグ名> を1つ足す。その後ろ、class を持つタグより前に文字があれば（足すと欄の外へ出て
+    行の鍵が変わるので）断る。補えない形なら OpError。"""
+    block = "".join(blines)
+    at = _time_close_at(block)
+    if at == "none":
+        raise OpError("この項目の時刻の欄には閉じタグがあります（直すものはありません）。何も書いていません。")
+    if at == "div":
+        raise OpError("この項目の時刻の欄は div で、閉じタグが無いため、後ろの項目が中に入った形になっています。close-time では直せません。"
+                      "何も書いていません。SKILL.md「ボードの点検」の①の直し方（restore）で直してください。")
+    if at == "after":
+        # 時刻の文字の後ろ、class を持つタグより前に文字がある（<b>am</b> など）。補うと欄の外へ出て鍵が変わるので断る
+        raise OpError("この項目の時刻の欄には、時刻の文字の後ろにタグで囲んだ文字があり、閉じタグを足す位置を決められません。何も書いていません。"
+                      "SKILL.md「ボードの点検」の①の直し方（restore）で直してください。")
+    if at == "text":
+        raise OpError("この項目の時刻の欄の文字が、欄の始まりの直後に見つからないため、閉じタグを足す位置を決められません。何も書いていません。"
+                      "ユーザーに時刻の欄の文字を確かめてください。")
+    if at == "count":
+        m, _stop = _time_open_unclosed(block)
+        tag = m.group(1)
+        opens = len(re.findall(r"<%s\b[^>]*>" % re.escape(tag), block, re.I))
+        closes = len(re.findall(r"</%s\s*>" % re.escape(tag), block, re.I))
+        raise OpError("この項目の <%s> と </%s> の数（%d と %d）が、閉じタグを1つ足して合う形ではありません。何も書いていません。"
+                      "閉じタグが項目の終わりに置かれた形か、閉じタグのある欄の中に class を持つ要素がある形かもしれません。SKILL.md「ボードの点検」の⑥のとおり、restore するかをユーザーに確かめてください。" % (tag, tag, opens, closes))
+    pos, tag = at
+    return (block[:pos] + "</%s>" % tag + block[pos:]).splitlines(keepends=True)
+
+
+def op_close_time(text, nl, a):
+    return _item_op(text, nl, a, block_close_time)
+
+
 def _canon_label(label):
     for name in CANON_SECTIONS:
         if label.startswith(name):
@@ -321,11 +476,115 @@ def _canon_label(label):
     return None
 
 
+# 閉じタグの無い要素がブラウザでどこまで続くか（_implied_close・v2.14 / board_edit.py v1.10。外側で開いていない閉じタグを読み飛ばすのと、
+# p を後ろの block 要素の手前で閉じるのは v2.15 / board_edit.py v1.11）
+_TAG_TOKEN_RE = re.compile(r'<(/?)([A-Za-z][\w-]*)\b[^>]*?(/?)>')
+_VOID_TAGS = frozenset(("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"))
+# p を閉じる開きタグ（HTML の構文解析で p を閉じる要素。互換モードに合わせて table は入れない＝board-template.html から作った板は doctype が無く
+# 互換モードで開かれ、そこでは table は p を閉じない。手で doctype を足した板〔標準モード〕では table も p を閉じるので、その板の
+# <p class="time">…<table> だけは画面と違う所で閉じる）。ブラウザがこれらの開きタグで p を閉じるのは、p が button scope にあるとき
+# （欄の p と開きタグの間に button・表などの境界の要素が無いとき）で、ここではその前提を置いて調べない（手書きでしか生まれない形）
+_P_CLOSERS = frozenset(("address", "article", "aside", "blockquote", "center", "dd", "details", "dialog", "dir", "div", "dl", "dt",
+                        "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr",
+                        "li", "listing", "main", "menu", "nav", "ol", "p", "plaintext", "pre", "search", "section", "summary", "ul", "xmp"))
+
+
+def _open_stack(block, upto):
+    """block の先頭から upto までに開いて、まだ閉じていない要素の名前の並び（外側から順。v2.15 / board_edit.py v1.11）。"""
+    stack = []
+    for t in _TAG_TOKEN_RE.finditer(block, 0, upto):
+        name = t.group(2).lower()
+        if not t.group(1):
+            if not t.group(3) and name not in _VOID_TAGS:
+                stack.append(name)
+        elif name in stack:
+            while stack.pop() != name:
+                pass
+    return stack
+
+
+def _implied_close(block, pos, outer=()):
+    """閉じタグの無い要素の終わり（v2.14 / board_edit.py v1.10 で新設。outer と、開いていない閉じタグの読み飛ばしは v2.15 / board_edit.py v1.11）。pos（要素の開きタグの直後）から読み、外側で開いている要素（outer＝
+    _open_stack）の閉じタグの位置を返す。無ければ None。ブラウザはそこで閉じタグの無い要素を閉じる。中で開いた要素の閉じタグは読み飛ばし、
+    void 要素と /> は開いたものに数えない。中でも外側でも開いていない要素の閉じタグ（<span class="time">9:00</b>… の </b>）は、ブラウザと
+    同じく読み飛ばす（v2.15 / board_edit.py v1.11。v2.14 はそこで閉じた）。ブラウザの構文解析のすべてをなぞるものではない——なぞるのは
+    この2つと、_time_range の p の扱いだけで、表・書式要素の付け替えなど手書きでしか生まれない形は、画面と違う所で閉じることがある
+    （例: 外側の閉じタグの後に欄と同じ名前の閉じタグがある <span class="time">9:00</div>tail</span></div> は、_time_range が同じ名前の
+    閉じタグまでを欄とみなすので、画面より広くなる）。
+    _remove_time_elements・_key_text が、閉じタグの無い時刻の欄を画面と同じ所までの欄として扱うために使う（board.js は DOM しか見られない
+    ので、画面の側に合わせる）。"""
+    stack = []
+    for t in _TAG_TOKEN_RE.finditer(block, pos):
+        name = t.group(2).lower()
+        if not t.group(1):
+            if not t.group(3) and name not in _VOID_TAGS:
+                stack.append(name)
+            continue
+        if name in stack:
+            while stack.pop() != name:
+                pass
+            continue
+        if name in outer:
+            return t.start()
+    return None
+
+
+def _time_range(block, m):
+    """時刻の欄（開きタグの match＝m。group(1) がタグ名）の、ブラウザが欄とみなす範囲（v2.15 / board_edit.py v1.11）。
+    (中身の始まり, 中身の終わり, 要素の終わり) か、決まらなければ None。
+
+    要素の終わりは、同じタグ名の開きと閉じを数えて決める（入れ子に強い）。閉じタグが見つからない要素は、ブラウザが閉じる所
+    （外側の要素の閉じタグの手前＝_implied_close）まで。欄が p なら、その前に p を閉じる要素（div・li など＝_P_CLOSERS）が始まればその手前まで
+    （ブラウザは p をそこで閉じる。互換モードの板に合わせた集合で、標準モードの板の table だけは違う＝_P_CLOSERS の前の注釈）。項目の閉じタグは項目の中にあるので、閉じタグの無い欄でもふつうは決まる。"""
+    tag = m.group(1)
+    tok_re = re.compile(r"<(/?)%s\b[^>]*>" % re.escape(tag), re.I)
+    depth = 1
+    end = inner_end = None
+    for tm in tok_re.finditer(block, m.end()):
+        if tm.group(0).endswith("/>"):
+            continue
+        depth += -1 if tm.group(1) else 1
+        if depth == 0:
+            end, inner_end = tm.end(), tm.start()
+            break
+    if end is None:
+        end = inner_end = _implied_close(block, m.end(), _open_stack(block, m.start()))
+        if end is None:
+            return None
+    if tag.lower() == "p":
+        for t in _TAG_TOKEN_RE.finditer(block, m.end(), inner_end):
+            if not t.group(1) and t.group(2).lower() in _P_CLOSERS:
+                end = inner_end = t.start()
+                break
+    return m.end(), inner_end, end
+
+
+def _time_text(block):
+    """行の時刻の欄の文字（v2.15 / board_edit.py v1.11）。行の鍵の時刻の部分と同じ読み方（_key_text の stop_at_class）で、
+    board.js の tbTimeText（✎ の data-orig・D&D の形作り）と同じ。時刻の欄が無ければ None。
+    日付の切り替え・D&D の形作り・move・K14 など、時刻の欄の時刻を読む所はすべてこれで読む（v2.14 / v1.10 までは _element_text で
+    最初の同じ名前の閉じタグまで読み、閉じタグの無い欄では後ろの文字〔チップの「未」など〕まで時刻の文字に入った）。"""
+    return _key_text(block, "time", stop_at_class=True)
+
+
+# 時刻の欄を外すとき、中にあれば外さない行の部品（タイトル・補足・チップの箱・チップ・項目。v2.14 / board_edit.py v1.10。_remove_time_elements）。
+# class の書き方（空白・大文字・' の引用符・引用符なし）を問わない（ブラウザはどの書き方でも部品として扱う。_KEY_STOP_RE と同じ広さ）。
+# class の値も大文字小文字を区別しない（board-template.html から作ったボードは doctype が無く互換モードで開かれ、ブラウザの class セレクタと
+# CSS が class の値の大文字小文字を区別しないため。class="Chip" も部品＝board.js の tbTimeHasPart と同じ。tbTimeHasPart は class の値を
+# 小文字にそろえて比べるので、手で doctype を足した板〔標準モード〕でも同じ判定になる）
+_ROW_PART_RE = re.compile(r'<\w+\b[^>]*?\sclass\s*=\s*["\']?(?:[^"\'>]*\s)?(?:task-title|task-note|chips|chip|item)(?=["\'\s>/])', re.I)
+
+
 def _remove_time_elements(block):
     """class に time を持つ要素を、対応する閉じタグまで丸ごと外す。(外した後の文字列, 外した数) を返す。
 
-    要素の終わりは、同じタグ名の開きと閉じを数えて決める（入れ子に強い）。閉じタグが見つからない
-    要素は外さずに数えない（その場合、外した数が1にならず切り替えを止める＝構造が崩れた板の扱い）。
+    要素の範囲は _time_range（同じタグ名の開きと閉じを数えて決め、閉じタグが見つからない要素は、ブラウザが閉じる所＝外側の要素の閉じタグの
+    手前まで。v2.14 / board_edit.py v1.10。board.js の画面と同じ欄になる。v2.13 までは外さずに数えなかった）。範囲が決まらない要素は外さずに
+    数えない（項目の閉じタグは項目の中にあるので、ふつうは起きない。起きれば外した数が1にならず切り替えを止める）。
+    要素の中に行の部品（タイトル・補足・チップの箱・チップ・項目＝_ROW_PART_RE）があるときも外さずに数えない
+    （v2.14 / board_edit.py v1.10。閉じタグの無い欄の閉じが項目の終わりに置かれた形〔<span class="time">9:00 … </span></div>〕では、
+    外すとタイトル・補足・チップが一緒に消えた。v2.13 までの日付の切り替え・D&D・move はそのまま外した）。呼ぶ側は外した数が
+    1でなければ形を作らない（切り替えは止め、D&D・move は印だけを付けるか断る）。
     要素の前が空白だけなら、その空白と、要素の後ろの空白・改行1つも一緒に外す（行ごと消す）。
     """
     out = []
@@ -335,19 +594,11 @@ def _remove_time_elements(block):
         m = _TIME_OPEN_RE.search(block, pos)
         if not m:
             break
-        tag = m.group(1)
-        tok_re = re.compile(r"<(/?)%s\b[^>]*>" % re.escape(tag), re.I)
-        depth = 1
-        i = m.end()
-        end = None
-        for tm in tok_re.finditer(block, i):
-            if tm.group(0).endswith("/>"):
-                continue
-            depth += -1 if tm.group(1) else 1
-            if depth == 0:
-                end = tm.end()
-                break
-        if end is None:
+        r = _time_range(block, m)     # ブラウザが欄とみなす範囲（閉じタグの無い欄は閉じる所まで・v2.14。p と読み飛ばす閉じタグは v2.15）
+        end = inner_end = None
+        if r is not None:
+            _s, inner_end, end = r
+        if end is None or _ROW_PART_RE.search(block, m.end(), inner_end):
             out.append(block[pos:m.end()])
             pos = m.end()
             continue
@@ -365,10 +616,105 @@ def _remove_time_elements(block):
     return "".join(out), count
 
 
+def _insert_status_chip(block, nl):
+    """状態チップが無い item に「未」を足す（chips の欄が無ければ欄ごと、内側の閉じの前に足す）。作れなければ None。"""
+    for m in _SPAN_CLASS_RE.finditer(block):
+        tokens = m.group(2).split()
+        if "chip" in tokens and any(t in tokens for t in ("done", "active", "pending", "hold")):
+            return block
+    chip = '<span class="chip pending">未</span>'
+    m = re.search(r'(<div class="chips"[^>]*>)(.*?)(</div>)', block, re.S)
+    if m:
+        return block[:m.end(2)] + chip + block[m.end(2):]
+    last = block.rfind("</div>")
+    inner = block.rfind("</div>", 0, last) if last != -1 else -1
+    if inner == -1:
+        return None
+    ls = block.rfind("\n", 0, inner) + 1
+    if block[ls:inner].strip():
+        return block[:inner] + '<div class="chips">' + chip + "</div>" + block[inner:]
+    ind = block[ls:inner]
+    return block[:ls] + ind + '  <div class="chips">' + chip + "</div>" + nl + block[ls:]
+
+
 def _div_balance(text):
     """コメントの外の <div の数 − </div> の数。"""
     blanked = "".join(_blank_comments(text.splitlines(keepends=True)))
     return len(re.findall(r"<div\b", blanked)) - blanked.count("</div>")
+
+
+def parse_due_value(value):
+    """実施日の値（YYYY-MM-DD か YYYY-MM-DD H:MM）→ (date, "H:MM" か None)。読めなければ None。"""
+    m = _DUE_VALUE_RE.match(value or "")
+    if not m:
+        return None
+    try:
+        d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+    if m.group(4) is None:
+        return d, None
+    if int(m.group(4)) > 23 or int(m.group(5)) > 59:
+        return None
+    return d, "%d:%s" % (int(m.group(4)), m.group(5))
+
+
+def _item_open_attr(block, name):
+    """item の開始タグの属性 name の値（無ければ None）。"""
+    m = _ITEM_OPEN_RE.search(block)
+    if not m:
+        return None
+    a = re.search(r'\s%s="([^"]*)"' % re.escape(name), m.group(4))
+    return a.group(1) if a else None
+
+
+def _item_due_pending(block, today):
+    """「明日以降」の行で、今日の側へ移す対象なら (date, "H:MM" か None)、そうでなければ None。
+
+    実施日が今日以前・済でない・一度移した印（data-due-moved）が無い、の3つがそろうときだけ。
+    印は日付の切り替えが移し直さないための印。今日の側の行を「明日以降」へ戻すときは実施日を決め直し、印は外れる
+    （_later_due_shape・Deck v2.13・board_edit.py v1.9）ので、その行は決めた日に移る。印が付いたまま「明日以降」にあるのは、
+    旧版（Deck v2.12 以前か due を送らない board.js の D&D・board_edit.py v1.8 以前の move）で戻した行と、印を写した行
+    （add の --due-moved・spec の due_moved）で、それらは移し直さない。"""
+    due = parse_due_value(_item_open_attr(block, "data-due"))
+    if due is None or due[0] > today:
+        return None
+    if _CHIP_DONE_RE.search(block) or _item_open_attr(block, "data-due-moved") is not None:
+        return None
+    return due
+
+
+def _later_time_conflict(block, due_time):
+    """「明日以降」の行の時刻の欄が、実施日の時刻 due_time（"H:MM"）と違うなら、その時刻の欄の文字を返す（同じ・欄が無い・空なら None）。
+
+    警告 K14（later_time_mismatches）が使う。v1.7 の set-time・set-due・add・create はこの食い違いを作らないが、v1.6 までに今日の側に
+    できた食い違いの行を move・D&D で「明日以降」へ戻したときと、restore で v1.6 までの板を戻したときには残る。"""
+    if not due_time:
+        return None
+    t = (_time_text(block) or "").strip()
+    if not t or _norm_time(t) == _norm_time(due_time):
+        return None
+    return t
+
+
+def _mark_due_moved(block, today):
+    """「明日以降」から今日の側へ動かす行に、実施日が来ていれば一度移した印を付ける（どの経路で動かしても同じ印。日付の切り替えが
+    移し直さないための印で、「明日以降」へ戻すときは実施日を決め直し、印は外れる＝_later_due_shape）。"""
+    if _item_due_pending(block, today) is None:
+        return block
+    return _ITEM_OPEN_RE.sub(lambda m: m.group(0)[:-1] + ' data-due-moved="%s">' % today.isoformat(), block, count=1)
+
+
+def _item_due_shapeable(block):
+    """「明日以降」から今日の側へ動かす行で、形を作る対象なら実施日 (date, "H:MM" か None)、そうでなければ None（move・D&D・v2.11）。
+
+    実施日が読めて済でない行は、一度移した印の有無にも、実施日が先の日かにもよらず対象にする（印は日付の切り替えが
+    移し直さないための印で、形の規則は変えない。印のある「明日以降」の行は、旧版で戻した行か印を写した行＝_item_due_pending）。
+    日付の切り替えが移す対象を決めるのは _item_due_pending（印を見る）。"""
+    due = parse_due_value(_item_open_attr(block, "data-due"))
+    if due is None or _CHIP_DONE_RE.search(block):
+        return None
+    return due
 
 
 def hand_fingerprint(text):
@@ -650,7 +996,7 @@ def is_done_block(block):
 
 def item_info(lines, it, index):
     block = "".join(lines[it["s"]:it["e"] + 1])
-    t = _element_text(block, "time")
+    t = _key_text(block, "time", stop_at_class=True)    # 鍵と同じ読み方（閉じタグの無い欄でも欄そのものの文字・v1.10）
     m = re.search(r'\sdata-carried-from="([^"]*)"', lines[it["s"]])
     return {
         "index": index,
@@ -662,6 +1008,9 @@ def item_info(lines, it, index):
         "chip": status_chip(block),
         "crit": "crit" in _open_tag_classes(block),
         "carried": m.group(1) if m else None,
+        "due": _item_open_attr(block, "data-due"),
+        "due_moved": _item_open_attr(block, "data-due-moved"),
+        "due_from": _item_open_attr(block, "data-due-from"),
     }
 
 
@@ -753,6 +1102,73 @@ def check_time(value):
     return "%d:%s" % (int(m.group(1)), m.group(2))
 
 
+def check_due(value):
+    """実施日の引数を調べて、板に書く形（YYYY-MM-DD か YYYY-MM-DD H:MM）にする。読めなければ OpError。"""
+    text = (value or "").strip().replace("T", " ", 1)
+    due = parse_due_value(text)
+    if due is None:
+        raise OpError("実施日「%s」は使えません。何も書いていません。YYYY-MM-DD か、時刻も分かるなら YYYY-MM-DD H:MM の形で、"
+                      "実在する日付と時刻を指定してください（例 2026-11-04・2026-11-04 22:05。空白の代わりに T でもよい）。" % value)
+    return due[0].isoformat() + (" " + due[1] if due[1] else "")
+
+
+def check_due_moved(value):
+    """一度移した印の引数（YYYY-MM-DD か none）→ 板に書く日付の文字列か None（none＝印なし）。読めなければ OpError。"""
+    text = (value or "").strip()
+    if text == "none":
+        return None
+    due = parse_due_value(text)
+    if due is None or due[1] is not None:
+        raise OpError("一度移した印（--due-moved・spec の due_moved）「%s」は使えません。何も書いていません。"
+                      "元の行の status の due_moved の日付（YYYY-MM-DD）を写し、印が無ければ none（spec では null）を指定してください。" % value)
+    return due[0].isoformat()
+
+
+def due_attrs(due, moved, came=None):
+    """開始タグに足す実施日・一度移した印・元の実施日の属性（Deck と同じ順＝data-due・data-due-moved・data-due-from）。"""
+    return (' data-due="%s"' % due + (' data-due-moved="%s"' % moved if moved else "")
+            + (' data-due-from="%s"' % came if came else ""))
+
+
+def check_due_from(value):
+    """元の実施日（--due-from・spec の due_from。今日の側へ移した行の、移す前の実施日・v1.7）の引数 → 板に書く値か None（none＝無し）。"""
+    if value is None or str(value).strip() == "none":
+        return None
+    try:
+        return check_due(value)
+    except OpError:
+        raise OpError("元の実施日（--due-from・spec の due_from）「%s」は使えません。何も書いていません。"
+                      "元の行の status の due_from を写し、無ければ省いてください（spec では null）。" % value)
+
+
+def roll_due_today(due, tm, moved, came, today):
+    """今日の側の行で、実施日が今日でなければ、実施日を今日にする（Deck の日付の切り替えの _carry_due_today と同じ規則・v1.7。先の日の行は v1.9）。
+
+    (実施日, 印, 元の実施日) を返す。時刻は tm（行の時刻の欄）があれば含め、無ければ日付だけ。元の実施日は came があればそのまま、
+    無ければ due の日付と行の時刻（tm、無ければ due の時刻。Deck v2.12 の _carry_due_today と同じ・v1.9。v1.8 までは due そのままで、
+    時刻の欄と実施日の時刻が違う行では足し直しと Deck の引き継ぎとで元の実施日の時刻が変わった）。印は moved が無ければ今日。
+    実施日が今日・読めない行はそのまま。実施日が先の日の行も今日にする（今日の側の行は今日の行＝Deck v2.13 と同じ・v1.9）。tm は呼び手が操作の後の行の時刻を渡す（add・create は --time・spec の time、
+    set-due は渡された実施日に時刻があり時刻の欄があればその時刻＝set-due は時刻の欄を実施日の時刻にそろえるため、それ以外は H:MM の時刻の欄）。"""
+    pd = parse_due_value(due) if due else None
+    if pd is None or pd[0] == today:
+        return due, moved, came
+    rt = tm or pd[1]
+    return (today.isoformat() + (" " + tm if tm else ""), moved or today.isoformat(),
+            came or pd[0].isoformat() + (" " + rt if rt else ""))
+
+
+TODAY_SIDE = ("今日の予定", "今日中")
+# 今日の側の行を「明日以降」へ動かすときの --due の断りの文（move・v1.9）
+MOVE_LATER_DUE_RULE = ("項目「%s」は「%s」にあります。何も書いていません。「明日以降」へ動かすときは --due で実施日を指定してください。"
+                       "実施日はユーザーに確かめる（日付〔時刻は任意〕か、未定か。status の due_from が今日より後ならそれを元の予定として、"
+                       "time が H:MM ならその時刻を行の時刻として見せる。確かめずに当てない）。日付なら --due YYYY-MM-DD か --due \"YYYY-MM-DD H:MM\"、"
+                       "未定なら --due none。move は実施日をその値にし、一度移した印と元の実施日を外す（その日に Deck が今日の側へ移す）。"
+                       "時刻の欄は、--due に時刻があればその時刻にし、無ければ外す（未定では変えない）。")
+# 今日の側の行に実施日を付けるのは、足し直す行に元の行の実施日を写すときだけ（印と対で写す）。add・set-due・spec の断りの文で使う
+DUE_TODAY_SIDE_RULE = ("今日の予定・今日中の行に実施日を付けるのは、足し直す行に元の行の実施日を写すときだけで、"
+                       "そのときは一度移した印（status の due_moved）も対で写します（%s）。")
+
+
 def check_chip(value):
     if value is None:
         raise OpError("--chip を指定してください（done・active・pending・wait・hold・none）。")
@@ -768,9 +1184,9 @@ def chip_span(chip):
 CRIT_SPAN = '<span class="chip crit">重要タスク</span>'
 
 
-def build_item(indent, nl, title, note=None, chip="pending", crit=False, time_=None):
+def build_item(indent, nl, title, note=None, chip="pending", crit=False, time_=None, attrs=""):
     cls = "item" + ("" if time_ else " flat") + (" crit" if crit else "")
-    out = ['%s<div class="%s">' % (indent, cls)]
+    out = ['%s<div class="%s"%s>' % (indent, cls, attrs)]
     if time_:
         out.append('%s  <div class="time">%s</div>' % (indent, esc(time_)))
     out.append("%s  <div>" % indent)
@@ -922,6 +1338,10 @@ def block_edit(blines, nl, title=None, note=None):
 
 def block_set_time(blines, nl, value):
     block = "".join(blines)
+    if _time_unclosed(block):
+        # 閉じタグの無い欄を書き換えると、欄の中に入ったタイトル・チップまで消える（v1.10）
+        raise OpError("この項目の時刻の欄には閉じタグが無いため、時刻を書き換えられません。何も書いていません。"
+                      "先に close-time --item <項目> で閉じタグを補ってください（警告 K15）。")
     n_time = len(list(_TIME_OPEN_RE.finditer(block)))
     if n_time > 1:
         raise OpError("この項目には時刻の欄が %d 個あるため、時刻を書き換えられません。何も書いていません。" % n_time)
@@ -930,7 +1350,7 @@ def block_set_time(blines, nl, value):
             return blines
         block, count = _remove_time_elements(block)
         if count != 1:
-            raise OpError("この項目の時刻の欄の閉じタグが見つからないため、時刻を外せません。何も書いていません。")
+            raise OpError("この項目の時刻の欄は、閉じタグが見つからないか、中にタイトル・補足・チップが入っているため、外せません。何も書いていません。")
         bl = block.splitlines(keepends=True)
         bl[0] = _ITEM_CLASS_RE.sub(
             lambda m: m.group(1) + _toggle_class_token(m.group(2), "flat", True) + m.group(3), bl[0], count=1)
@@ -947,12 +1367,28 @@ def block_set_time(blines, nl, value):
     return [bl[0], '%s<div class="time">%s</div>%s' % (ind, esc(value), nl)] + bl[1:]
 
 
+def block_set_due(blines, value, moved=None, came=None):
+    """開始タグの実施日を value にする（None で外す）。一度移した印は moved にする（None なら外す＝日付を決め直した行は、また移す対象になる）。
+    元の実施日（data-due-from）は came にする（None なら外す＝日付を決め直した行は、新しい予定になる）。"""
+    bl = list(blines)
+
+    def fix(m):
+        attrs = re.sub(r'\s*data-due(?:-moved|-from)?="[^"]*"', "", m.group(4))
+        if value:
+            attrs += due_attrs(value, moved, came)
+        return m.group(1) + m.group(2) + m.group(3) + attrs + ">"
+    bl[0], n = _ITEM_OPEN_RE.subn(fix, bl[0], count=1)
+    if n != 1:
+        raise OpError("この項目は開始タグの形が想定と違うため、実施日を書けません。何も書いていません。")
+    return bl
+
+
 def normalize_block(blines):
     block = "".join(blines)
     return _normalize_item_block(block, is_done_block(block)).splitlines(keepends=True)
 
 
-# ================================================================ 検査（K1〜K12）
+# ================================================================ 検査（K1〜K15）
 
 def _region_text(text, start_re):
     """start_re に当たる開始タグの div を、対応する閉じまで（コメントは潰した写しで数える）。"""
@@ -1026,8 +1462,55 @@ def count_progress(lines):
     return copy
 
 
+def readd_fields(src):
+    """add で足し直すときに写す欄の文（K11・move・restore・require_sound で同じ文を使う）。src は写し元の名前。"""
+    return ("%s の time・chip・note・due・due_moved・due_from を写す〔chip が none でも --chip none で写す。time は --time、due は --due、"
+            "due_moved は --due-moved で写す（今日の予定・今日中へ足す行で due があれば due_moved も対で写し、null なら --due-moved none。"
+            "「明日以降」へ足す行で due_moved が null なら --due-moved は省く）。"
+            "due_from（元の実施日）は --due-from で写す（null なら省く）。"
+            "ただし「明日以降」へ足す行に due があるときは、add が --time と --due を一緒に受けないので、due に時刻が無く time が H:MM なら"
+            "その時刻を --due に含め（--due \"<due> <time>\"）、それ以外は time を写さない"
+            "（時刻の欄の無い行は、今日の側へ動かすときに実施日の時刻が使われる）。"
+            "due に時刻があり、time がそれと違う行は（H:MM でも）、time が消えるので、due の時刻と time をユーザーに見せてどちらの時刻にするかを確かめ、"
+            "time にすると言われたら --due \"<due の日付> <time>\" で写す（同じ時刻なら確かめない）。"
+            "今日の予定・今日中へ足す行は time と due を写す（due に時刻があれば、add が due の時刻を time と同じ値にする＝行の時刻は1つ・v1.7。"
+            "due の日付が今日でなければ（先の日の due は v1.9 から）、add が実施日を今日にし、元の実施日を due_from に残す）。今日の側へ足す行でも、due に時刻があり time がそれと違えば（H:MM でも）、"
+            "同じくどちらの時刻にするかを確かめ、due の時刻にすると言われたら --time にその時刻を写す（restore の足し直しと同じ）。"
+            "due の無い行の time は、「明日以降」へ足すときも --time で写す。"
+            "time が H:MM でない行（「午後」など）は time を写さない（板の時刻の欄は H:MM と決まっていて、--time も H:MM だけを受ける）。"
+            "写さなかった time はユーザーに伝え、H:MM の時刻にするかをユーザーに確かめる（ユーザーが H:MM の時刻を言ったときだけ、その時刻を写す。確かめずに H:MM を当てない）〕" % src)
+
+
+def readd_order(add_part, fields, extra=""):
+    """元の行を先に消してから足し直す手順の文（同じタイトルの行が2つ並ばないよう、消してから足す）。"""
+    return ("status で元の行の欄を控え、remove で元の行を先に消し（--confirmed を付ける前に、消す行をユーザーに確かめる）、"
+            "%s で足し直し（%s%s）、重要タスクだった項目は足した後に set-crit で付け直してください。" % (add_part, fields, extra))
+
+
+def restore_readd_text(src):
+    """restore で戻した後に、いまの板にだけあった行を足し直す手順の文（restore の案内と require_sound で同じ文を使う）。"""
+    return ("足し直してよいと言われた行だけを add で足し直してください（%s。crit が付いていた行は足した後に set-crit で付け直す。"
+            "「明日以降」へ足した行で K13 が出たら SKILL.md update モード 9 の手順で今日の側へ移す）。"
+            "only_restore にも同じタイトルの行がある only_now の行は、戻した板にその行が残っているので add で足さず、違う欄だけをその行に当ててください"
+            "（同じタイトルの行が only_now か only_restore に2つ以上あるときは、見出し・時刻・補足の近いものを組にし、決まらなければ両方の行をユーザーに見せて組を確かめる）。"
+            "見出しが違うときは、先に move --item <タイトル> --section <only_now の見出し> で戻した板の行を動かし（今日の予定へは、時刻のある行は時刻の順の位置へ入る。行き先の見出しが戻した板に無ければ --create-section を付ける。今日の予定・今日中から「明日以降」へ動かすときは --due none を付けて動かし、実施日は下のとおり set-due で当てる＝v1.9）、"
+            "動かした後は status でその行を読み直して only_now と違う欄を当てる"
+            "（動かす元か行き先が 今日の予定・今日中・明日以降 でなく move で動かせないときは、先に戻した板の行を remove で消してから"
+            "〔消す前の欄は only_restore にある〕、上のとおり add で足す）。"
+            "当てる欄は、chip は set-chip、note は edit、time は set-time（H:MM でない time は当てない＝板の時刻の欄は H:MM と決まっていて、set-time も H:MM だけを受ける。当てなかった time はユーザーに伝える。"
+            "time は due より先に当てる〔set-time は実施日の時刻も同じ値にし〈--time none なら外す〉、set-due は時刻の欄を実施日の時刻にそろえるので、後に当てた due の時刻が残る＝v1.7〕。"
+            "only_now の due に時刻があり、time がそれと違えば〔H:MM でも〕どちらの時刻にするかをユーザーに確かめ、time にするなら set-due --due \"<due の日付> <time>\" で当てる〔同じ時刻なら確かめない〕）、"
+            "crit は set-crit、due と due_moved と due_from は "
+            "set-due --due <only_now の due> --due-moved <only_now の due_moved> --due-from <only_now の due_from>"
+            "（due_moved が null なら、今日の予定・今日中の行では --due-moved none、「明日以降」の行では省く＝set-due は印も外す。"
+            "due_from が null なら --due-from を省く＝set-due は元の実施日も外す。"
+            "only_now の due が null なら set-due --due none）。"
+            "同じタイトルの行が戻した板に2つ以上あって --item が断るときは status の番号で指し、move などで書いた後は status で番号を取り直す"
+            "（remove の --confirmed は番号で指せないので、SKILL.md「ボードの書き方」の remove の回り道に従う）。" % readd_fields(src))
+
+
 def warnings_for(text):
-    """K11・K12（書くが警告を返す）。"""
+    """K11〜K15（書くが警告を返す）。"""
     lines = text.splitlines(keepends=True)
     secs, items = layout(lines)
     warns = []
@@ -1039,20 +1522,80 @@ def warnings_for(text):
         if any(rx.match(lb) for rx in ODD_SECTION_RES) and lb not in odd:
             odd.append(lb)
     if odd:
-        warns.append({"code": "K11", "message": "見出し「%s」は正式名（今日の予定・今日中・ルーチンタスク・明日以降）ではありません。"
-                      "この版には見出しの名前を直す操作が無く、move もこの見出しの項目は動かせません。正式名の見出しへ移してよいかをユーザーに確かめ、よいと言われた項目は add で正式名の見出しへ足し直し（status の time・chip・note を写し、重要タスクなら set-crit で付け直す）、remove で元の行を消してください（--confirmed を付ける前に、消す行をユーザーに確かめる）。残った見出しの扱いはユーザーに伝えてください。" % "」「".join(odd)})
+        warns.append({"code": "K11", "message": ("見出し「%s」は正式名（今日の予定・今日中・ルーチンタスク・明日以降）ではありません。"
+                      "この版には見出しの名前を直す操作が無く、move もこの見出しの項目は動かせません。正式名の見出しへ移してよいかをユーザーに確かめ、よいと言われた項目は、"
+                      % "」「".join(odd))
+                      + readd_order("正式名の見出しへ add", readd_fields("控えた status")) + "残った見出しの扱いはユーザーに伝えてください。"})
     bad = []
     for it in items:
         block = "".join(lines[it["s"]:it["e"] + 1])
-        if is_done_block(block) or "done-item" in _open_tag_classes(block):
+        if is_done_block(block):       # 済の判定はチップだけ（K14 と同じ。board.js の「時刻を読めない」チップも、done-item をチップに合わせた後に見る）
             continue
-        t = _element_text(block, "time")
-        if t is not None and t.strip() and not re.search(r"(\d{1,2}):(\d{2})", t):
+        t = _key_text(block, "time", stop_at_class=True)   # board.js の「時刻を読めない」と同じ読み方（v1.10）
+        hm = re.search(r"(\d{1,2}):(\d{2})", t or "")
+        if t is not None and t.strip() and (not hm or int(hm.group(1)) > 23 or int(hm.group(2)) > 59):
+            # 範囲外（25:00 など）も読めない時刻に数える（Deck の read_board_alarms・board.js の parseHM と同じ。v1.7）
             bad.append(_item_key(block))
     if bad:
-        warns.append({"code": "K12", "message": "時刻の欄が H:MM として読めない未完了の項目があります（%s）。"
-                      "正しい時刻をユーザーに確かめてから、set-time --item <項目> --time H:MM で直してください（時刻の無い行にするなら --time none）。" % "、".join(bad)})
+        warns.append({"code": "K12", "message": "時刻の欄が H:MM として読めない（時 0〜23・分 0〜59 の範囲外を含む）未完了の項目があります（%s）。"
+                      "正しい時刻をユーザーに確かめてから、set-time --item <項目> --time H:MM で直してください（時刻の無い行にするなら --time none）。"
+                      "実施日のある行では、set-time は実施日の時刻も同じ値にし、--time none なら実施日の時刻も外します（日付と一度移した印は変えない・v1.7）。" % "、".join(bad)})
+    today = date.today()
+    due_now = [_item_key("".join(lines[it["s"]:it["e"] + 1])) for it in items
+               if _canon_label(it["section"] or "") == TOMORROW
+               and _item_due_pending("".join(lines[it["s"]:it["e"] + 1]), today)]
+    # Deck の日付の切り替えが形を作れない行（_due_moved_shape が None＝時刻の欄が2つ以上・欄の中に行の部品がある等）は、切り替えでは
+    # 移らずその場に残る（Deck の roll_board_text の「明日以降」・v1.10）
+    stuck = [_item_key("".join(lines[it["s"]:it["e"] + 1])) for it in items
+             if _canon_label(it["section"] or "") == TOMORROW
+             and _item_due_pending("".join(lines[it["s"]:it["e"] + 1]), today)
+             and _due_moved_shape("".join(lines[it["s"]:it["e"] + 1]), _item_due_pending("".join(lines[it["s"]:it["e"] + 1]), today),
+                                  today, "\n", True) is None]
+    if due_now:
+        warns.append({"code": "K13", "message": "「明日以降」に実施日が今日以前の行があります（%s）。SKILL.md update モード 9 の手順で今日の側へ移してください"
+                      "（移した行は status の due_now から外れます。Deck が動いていれば、移さなくても次の日付の切り替えで移ります%s）。"
+                      % ("、".join(due_now),
+                         "。ただし %s は、行の形が想定と違う（時刻の欄が2つ以上ある・時刻の欄の中にタイトルやチップが入っている等）ため、Deck の日付の切り替えでは移らずその場に残ります（K15 があれば先にその直し方で直してください）"
+                         % "、".join(stuck) if stuck else "")})
+    unclosed = [_item_key("".join(lines[it["s"]:it["e"] + 1])) for it in items
+                if _time_unclosed("".join(lines[it["s"]:it["e"] + 1]))]
+    if unclosed:
+        warns.append({"code": "K15", "message": "時刻の欄の閉じタグが無い項目があります（%s）。ブラウザでは時刻の欄の中にタイトルやチップなど class を持つ要素が入り、"
+                      "✎ で時刻を変えられません。欄の中にタイトルやチップが入っている行は、「明日以降」へ動かすときに実施日も決められません。"
+                      "ユーザーに「ボードを直して」と頼まれたら、"
+                      "close-time --item <項目> で閉じタグを補ってください（タスクの文言・状態は変わりません）。" % "、".join(unclosed)})
+    mism = later_time_mismatches(lines, items)
+    if mism:
+        warns.append({"code": "K14", "message": "「明日以降」に、時刻の欄が実施日の時刻と違う行があります（%s）。"
+                      % "、".join("%s〔時刻の欄 %s・実施日 %s〕" % m for m in mism)
+                      + "v1.6 までの操作（今日の側で set-time した行を move・D&D で戻す等）でできた形です（v1.7 の set-time・set-due・add・create は、時刻の欄と実施日の時刻を同じ値にする）。"
+                        "このままだと、今日の側へ動かすとき（move・D&D。一度移した印の無い行は Deck の日付の切り替えも＝Deck v2.11 から）は時刻の欄の時刻が使われ、create で作り直すと実施日の時刻だけが残ります。"
+                        "時刻の欄の時刻と実施日の時刻をユーザーに見せて、どちらの時刻にするかを確かめ（確かめずにどちらかを消さない）、"
+                        "set-time --item <項目> --time <決めた時刻> で揃えてください（実施日の時刻も同じ値になる。日付と一度移した印は変えない）。"})
     return warns
+
+
+def later_time_mismatches(lines, items):
+    """「明日以降」の未完了の行で、実施日に時刻があり、H:MM の時刻の欄がそれと違うもの（警告 K14・v1.6）。[(項目, 時刻の欄, 実施日)] を返す。
+
+    v1.6 までの操作（今日の側で set-time した行を move・D&D で戻す等）でできた形（v1.7 の set-time・set-due・add・create は作らないが、
+    v1.6 までに今日の側にできた行を戻したとき・restore で v1.6 までの板を戻したときには残る）。
+    今日の側へ動かすとき（move・D&D。印の無い行は Deck v2.11 の日付の切り替えも）は時刻の欄の時刻が使われ、create では実施日の時刻だけが残る。
+    済の判定は状態チップだけで行う（チップが唯一の真実。board.js は読み込みで done-item をチップに合わせ、Deck の read_board_alarms もチップだけを見る）。
+    時刻の欄が H:MM でない行は K12 が知らせる。board.js の「ボードの点検」の⑤（renderBoardCheck）が同じ条件で知らせる。"""
+    out = []
+    for it in items:
+        if _canon_label(it["section"] or "") != TOMORROW:
+            continue
+        block = "".join(lines[it["s"]:it["e"] + 1])
+        if is_done_block(block):
+            continue
+        raw = _item_open_attr(block, "data-due")
+        due = parse_due_value(raw)
+        t = _later_time_conflict(block, due[1]) if due else None
+        if t is not None and _valid_hm(t):
+            out.append((_item_key(block), t, raw))
+    return out
 
 
 def run_checks(op, old_text, new_text, intended_date_text, touched_old=(), touched_new=(), delta=0):
@@ -1140,10 +1683,38 @@ def require_board(old):
 def require_sound(old_text, op):
     errs = structure_errors(old_text)
     if errs:
-        raise OpError("いまの board.html は形が崩れているため、%s では書きません。"
-                      "status の restorable_today（いまの板と日付が同じで、形の正しい版）を見て、restore --from history/<ファイル名> で戻してから、"
-                      "欠けた行をユーザーに見せ、足し直してよいと言われた行だけを add で足し直してください。"
-                      "restorable_today が空なら、ボードを書かずに、この出力をユーザーに見せて、どうするかを確かめてください。" % op, checks=errs)
+        raise OpError(("いまの board.html は形が崩れているため、%s では書きません。"
+                       "status の restorable_today（いまの板と日付が同じで、形の正しい版）を見て、restore --from history/<ファイル名> で戻してから、"
+                       "欠けた行をユーザーに見せ、" % op) + restore_readd_text("restore の diff の only_now") +
+                      "restorable_today が空なら、ボードを書かずに、この出力をユーザーに見せて、どうするかを確かめてください。", checks=errs)
+
+
+def new_section_indent(lines):
+    """新しい見出しの字下げ（最初の見出しと同じ。見出しが無ければ DECK の始まりの行と同じ）。"""
+    secs, _items = layout(lines)
+    if secs:
+        return indent_of(lines[secs[0]["line"]])
+    dl = next((i for i, ln in enumerate(lines) if MARKER_START in ln), None)
+    return indent_of(lines[dl]) if dl is not None else "  "
+
+
+def insert_new_section(lines, name, item_lines, nl, indent):
+    """見出し name を作り、その直後に item_lines を置く（add と move の --create-section で同じ）。(新しい行の一覧, 見出しの行) を返す。
+
+    置き場は見出しの正式な順（今日の予定・今日中・その他・ルーチンタスク・明日以降）で、後ろに来るべき最初の見出しの前。
+    無ければ DECK の始まりの前の、最後の空でない行の後ろ。"""
+    rank = section_rank(name)
+    secs, _items = layout(lines)
+    insert_at = next((s["line"] for s in secs if section_rank(s["label"]) > rank), None)
+    label = '%s<div class="section-label">%s</div>%s' % (indent, esc(name), nl)
+    if insert_at is not None:
+        return lines[:insert_at] + [label] + item_lines + [nl] + lines[insert_at:], insert_at
+    dl = next((i for i, ln in enumerate(lines) if MARKER_START in ln), len(lines))
+    j = dl - 1
+    while j >= 0 and lines[j].strip() == "":
+        j -= 1
+    pos = j + 1
+    return lines[:pos] + [nl, label] + item_lines + lines[pos:], pos + 1
 
 
 def op_add(text, nl, a):
@@ -1152,7 +1723,29 @@ def op_add(text, nl, a):
     title = check_text(a.title, "--title")
     note = check_text(a.note, "--note", allow_empty=True) or None
     tm = check_time(a.time) if a.time else None
+    due = check_due(a.due) if a.due is not None else None
+    if a.due_moved is not None and due is None:
+        raise OpError("--due-moved（一度移した印）は --due と一緒にだけ使えます。何も書いていません。")
+    moved = check_due_moved(a.due_moved) if a.due_moved is not None else None
+    if getattr(a, "due_from", None) is not None and due is None:
+        raise OpError("--due-from（元の実施日）は --due と一緒にだけ使えます。何も書いていません。")
+    came = check_due_from(getattr(a, "due_from", None))
     name = check_text(a.section, "--section")
+    canon = _canon_label(name)
+    if due and canon == TOMORROW and tm:
+        raise OpError("「明日以降」の行では --time と --due は一緒に使えません。何も書いていません。「明日以降」の行の時刻は --due に含めてください（例 --due \"2026-11-04 22:05\"）。"
+                      "「明日以降」の行は、--time を付けても通知の対象になりません。")
+    if due and canon in TODAY_SIDE and a.due_moved is None:
+        raise OpError("--due には --due-moved も要ります。何も書いていません。" + DUE_TODAY_SIDE_RULE % "--due-moved <日付>。null なら --due-moved none"
+                      + "新しく足す今日の行なら --due を外してください（先の日にやるなら「明日以降」へ足す）。")
+    if due and canon not in TODAY_SIDE and canon != TOMORROW:
+        raise OpError("実施日（--due）を付けられるのは「明日以降」の行と、今日の予定・今日中へ足し直す行だけです。何も書いていません。今日の行なら --due を外してください。")
+    if due and canon in TODAY_SIDE:
+        # 今日の側の行で実施日が今日でなければ（先の日の実施日は v1.9 から）、実施日を今日にする（create・Deck の日付の切り替えと同じ・v1.7）
+        due, moved, came = roll_due_today(due, tm, moved, came, date.today())
+    if due and tm and parse_due_value(due)[1]:
+        due = due.split(" ")[0] + " " + tm      # 行の時刻は1つ（時刻の欄と実施日の時刻を同じ値にする・v1.7）
+    due_attr = due_attrs(due, moved, came) if due else ""
     if name.startswith(RESERVED_SECTIONS):
         raise OpError("「%s」は Deck が書く見出しなので、ここには足せません。別の見出しを指定してください。" % name)
     lines = text.splitlines(keepends=True)
@@ -1166,31 +1759,9 @@ def op_add(text, nl, a):
         if a.after:
             raise OpError("新しい見出しには --after で指す項目がありません。--after を外してください。")
         chip = check_chip(a.chip) if a.chip else default_chip(name)
-        rank = section_rank(name)
-        secs, _items = layout(lines)
-        insert_at = None
-        for s in secs:
-            if section_rank(s["label"]) > rank:
-                insert_at = s["line"]
-                break
-        if secs:
-            indent = indent_of(lines[secs[0]["line"]])
-        else:
-            dl = next((i for i, ln in enumerate(lines) if MARKER_START in ln), None)
-            indent = indent_of(lines[dl]) if dl is not None else "  "
-        item_lines = build_item(indent, nl, title, note, chip, False, tm)
-        label = '%s<div class="section-label">%s</div>%s' % (indent, esc(name), nl)
-        if insert_at is not None:
-            new = lines[:insert_at] + [label] + item_lines + [nl] + lines[insert_at:]
-            lab_at = insert_at
-        else:
-            dl = next((i for i, ln in enumerate(lines) if MARKER_START in ln), len(lines))
-            j = dl - 1
-            while j >= 0 and lines[j].strip() == "":
-                j -= 1
-            pos = j + 1
-            new = lines[:pos] + [nl, label] + item_lines + lines[pos:]
-            lab_at = pos + 1
+        indent = new_section_indent(lines)
+        item_lines = build_item(indent, nl, title, note, chip, False, tm, due_attr)
+        new, lab_at = insert_new_section(lines, name, item_lines, nl, indent)
         out = "".join(new)
         return Result(out, {"section": name, "created_section": True}, touched_new={lab_at, lab_at + 1}, delta=1)
     chip = check_chip(a.chip) if a.chip else default_chip(sec["label"])
@@ -1203,13 +1774,147 @@ def op_add(text, nl, a):
             raise OpError("--after の項目「%s」は見出し「%s」の中にありません（「%s」にあります）。何も書いていません。"
                           % (inf["key"], sec["label"], inf["section"]))
         pos = it["e"] + 1
+    elif tm and _canon_label(sec["label"]) == "今日の予定":
+        pos = plan_time_pos(lines, sec["line"], _hm_minutes(tm))
     else:
         pos = section_end(lines, sec["line"])
-    item_lines = build_item(indent, nl, title, note, chip, False, tm)
+    item_lines = build_item(indent, nl, title, note, chip, False, tm, due_attr)
     if pos > 0 and not lines[pos - 1].endswith(("\n", "\r")):
         lines[pos - 1] += nl
     new = lines[:pos] + item_lines + lines[pos:]
     return Result("".join(new), {"section": sec["label"], "created_section": False}, touched_new={pos}, delta=1)
+
+
+def _block_minutes(block):
+    """項目の時刻の欄の分（Deck の日付の切り替えが「今日の予定」の並びに使うのと同じ読み方）。読めなければ None。"""
+    m = re.search(r"(\d{1,2}):(\d{2})", _time_text(block) or "")
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def plan_time_pos(lines, sec_line, minutes):
+    """「今日の予定」の見出し（sec_line）の中で、minutes の行を入れる位置（その時刻より後の最初の行の前。無ければ見出しの末尾）。
+
+    Deck の日付の切り替えが実施日の来た行を「今日の予定」へ置く位置と同じ（時刻の読めない行は飛ばす）。"""
+    if minutes is not None:
+        _secs, items = layout(lines)
+        for it in items:
+            if it["sec_line"] != sec_line:
+                continue
+            t = _block_minutes("".join(lines[it["s"]:it["e"] + 1]))
+            if t is not None and t > minutes:
+                return it["s"]
+    return section_end(lines, sec_line)
+
+
+def _valid_hm(text):
+    """H:MM（時 0〜23・分 0〜59）なら "H:MM"（時の先頭の 0 を落とす）、そうでなければ None。行の時刻の欄を時刻として使うかの判定（v2.11）。"""
+    m = re.match(r"^(\d{1,2}):(\d{2})$", (text or "").strip())
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        return None
+    return "%d:%s" % (int(m.group(1)), m.group(2))
+
+
+def _due_moved_shape(block, due, today, nl, to_plan):
+    """「明日以降」から今日の側へ動かす行の形（Deck の日付の切り替え・D&D の反映・board_edit.py の move で同じ）。
+
+    行の時刻は、時刻の欄が H:MM（時 0〜23・分 0〜59）ならその時刻、無ければ実施日の時刻（v2.11。時刻の欄を書く操作は実施日の
+    時刻も同じ値にするので、ふつうは同じ値。違う行〔v1.6 までの操作でできた行〕では時刻の欄を使う＝2026-11-05 ユーザー決定。
+    どちらが後から書かれたかは板からは分からない）。to_plan は行き先が「今日の予定」か。行き先が「今日の予定」で、実施日が今日で
+    時刻があれば、時刻の欄をその時刻にして flat を外す（通知の対象になる）。それ以外（前の日・先の日の行、今日中へ動かす行）は
+    時刻の欄を外して flat を付ける（その日の時刻を、今日のその時刻に鳴らさない）。外した時刻の欄は data-orig-time に残さない
+    （行の時刻は data-due か data-due-from に残る。ただし H:MM でない時刻の欄の文字と、data-due-from が既にある行で時刻の欄の時刻がその時刻と違うときの時刻の欄の時刻は、どこにも残らない。data-orig-time は日付の切り替えが
+    data-carried-from と組で書く＝Deck v2.12・board_edit.py v1.8。v2.11・v1.7 までは残し、引き継いだ翌日のチップが別の日の時刻を出した）。
+    状態チップが無ければ「未」を足す。
+    実施日は今日にする（時刻の欄を付けるならその時刻を含め、付けないなら日付だけ。2026-11-05 ユーザー決定）。実施日が先の日の行
+    （前もって今日の側へ動かす行）も今日の行として扱い、実施日を今日にする（時刻は付けない＝前の日の行と同じく時刻の欄を外して flat。
+    2026-11-06 ユーザー決定・v2.13・board_edit.py v1.9。v2.12・v1.8 までは先の日の行の日付も印も変えず、実施日の日が来ても鳴らなかった）。
+    元の実施日は data-due-from に残し（既にあれば変えない。日付は元の実施日の日付、時刻は行の時刻＝v2.12・v1.8。v2.11・v1.7 までは
+    元の data-due そのままで、時刻の欄と実施日の時刻が違う行〔v1.6 までの操作でできた行〕では実施日の時刻が残った）、
+    一度移した印を付ける（既にあれば変えない。先の日の行にも付ける＝今日の行になったので、他の今日の側の行と同じ・v2.13。
+    「明日以降」へ戻すときは利用者が実施日を決め直し、印は外れる＝_later_due_shape）。
+    形が想定外（時刻の欄が2つ以上など）なら None。
+    日付の切り替えは to_plan=True で呼び、出来上がりに時刻の欄があれば「今日の予定」、無ければ「今日中」へ置く（_move_due_block）。"""
+    when = due[1]
+    n_time = len(_TIME_OPEN_RE.findall(block))
+    old_time = None
+    if n_time > 1:
+        return None
+    if n_time == 1:
+        old_time = (_time_text(block) or "").strip()
+        block, removed = _remove_time_elements(block)
+        if removed != 1:
+            return None
+        when = _valid_hm(old_time) or when
+    block = _insert_status_chip(block, nl)
+    if block is None:
+        return None
+    scheduled = bool(when) and due[0] == today and to_plan
+    new_due = today.isoformat() + (" " + when if scheduled else "")   # 先の日の行も今日にする（v2.13）
+
+    def fix(m):
+        cls = _toggle_class_token(m.group(2), "flat", not scheduled)
+        attrs = m.group(4)
+        raw = re.search(r'\sdata-due="([^"]*)"', attrs).group(1)
+        if new_due != raw:
+            attrs = re.sub(r'(\sdata-due=")[^"]*(")', lambda a: a.group(1) + new_due + a.group(2), attrs, count=1)
+        if not re.search(r'\sdata-due-moved="', attrs):
+            attrs += ' data-due-moved="%s"' % today.isoformat()
+        if not re.search(r'\sdata-due-from="', attrs):
+            attrs += ' data-due-from="%s"' % (due[0].isoformat() + (" " + when if when else ""))
+        return m.group(1) + cls + m.group(3) + attrs + ">"
+
+    m = _ITEM_OPEN_RE.search(block)
+    if not m:
+        return None
+    tag = fix(m)
+    rest = block[m.end():]
+    if scheduled:
+        time_el = '<div class="time">%s</div>' % html.escape(when, quote=False)
+        if rest.startswith(("\r\n", "\n")):
+            ind = re.match(r"[ \t]*", block).group(0)
+            tag += nl + ind + "  " + time_el
+        else:
+            tag += time_el
+    return block[:m.start()] + tag + rest
+
+
+def _later_due_shape(block, due, nl):
+    """今日の側から「明日以降」へ動かす行に、利用者が決めた実施日を当てる（D&D の反映・board_edit.py の move で同じ・Deck v2.13・
+    board_edit.py v1.9・2026-11-06 ユーザー決定）。due は (date, "H:MM" か None)、未定なら None。
+
+    実施日はその値にし、一度移した印（data-due-moved）と元の実施日（data-due-from）は外す（その日に日付の切り替えが今日の側へ
+    移す対象にする。元の予定は決め直した値に置き換わり、その日に移したときにあらためて data-due-from に残る）。行の時刻は1つにする:
+    時刻の欄が1つある行は、実施日に時刻があれば時刻の欄をその時刻にし、無ければ時刻の欄を外す（flat を付ける）。時刻の欄の
+    無い行には足さない。未定（None）は実施日・印・元の実施日を外し、時刻の欄は変えない。時刻の欄が2つ以上の行は時刻の欄を変えない。
+    形が想定外なら None。"""
+    m = _ITEM_OPEN_RE.search(block)
+    if not m:
+        return None
+    n_time = len(_TIME_OPEN_RE.findall(block))
+    put_time = None
+    timed = n_time > 0
+    if due is not None and n_time == 1:
+        block, removed = _remove_time_elements(block)
+        if removed != 1:
+            return None
+        put_time = due[1]
+        timed = bool(put_time)
+        m = _ITEM_OPEN_RE.search(block)
+        if not m:
+            return None
+    attrs = re.sub(r'\sdata-due(?:-moved|-from)?="[^"]*"', "", m.group(4))
+    if due is not None:
+        attrs += ' data-due="%s"' % (due[0].isoformat() + (" " + due[1] if due[1] else ""))
+    tag = m.group(1) + _toggle_class_token(m.group(2), "flat", not timed) + m.group(3) + attrs + ">"
+    rest = block[m.end():]
+    if put_time:
+        time_el = '<div class="time">%s</div>' % html.escape(put_time, quote=False)
+        if rest.startswith(("\r\n", "\n")):
+            ind = re.match(r"[ \t]*", block).group(0)
+            tag += nl + ind + "  " + time_el
+        else:
+            tag += time_el
+    return block[:m.start()] + tag + rest
 
 
 def section_rank(label):
@@ -1246,11 +1951,72 @@ def op_set_crit(text, nl, a):
     return _item_op(text, nl, a, lambda b: block_set_crit(b, nl, on))
 
 
+def align_due_time(blines, value):
+    """実施日（data-due）のある行の、実施日の時刻を value（"H:MM"。None なら時刻を外して日付だけにする）にする（v1.7）。
+
+    行の時刻は1つにする（時刻の欄を書く操作は、実施日の時刻も同じ値にする。日付・一度移した印・元の実施日は変えない）。
+    日付だけの実施日にも時刻を含める（今日の側へ移した行の実施日は今日なので、前の日の予定に時刻を書き足すことにはならない）。
+    set-time --time none は、時刻の欄のある行でだけ呼ぶ（欄の無い行では実施日の時刻を消さない）。実施日の無い行はそのまま。"""
+    bl = list(blines)
+    due = parse_due_value(_item_open_attr(bl[0], "data-due"))
+    if not due or (not due[1] and not value):
+        return bl
+    new = due[0].isoformat() + (" " + value if value else "")
+    bl[0] = re.sub(r'(\sdata-due=")[^"]*(")', lambda m: m.group(1) + new + m.group(2), bl[0], count=1)
+    return bl
+
+
 def op_set_time(text, nl, a):
     if a.time is None:
         raise OpError("set-time には --time H:MM（外すときは --time none）を指定してください。")
     value = None if a.time == "none" else check_time(a.time)
-    return _item_op(text, nl, a, lambda b: block_set_time(b, nl, value))
+
+    def fn(b):
+        if value is None and not _TIME_OPEN_RE.search("".join(b)):
+            return b            # 時刻の欄の無い行の --time none は何もしない（実施日の時刻だけを消さない）
+        return align_due_time(block_set_time(b, nl, value), value)
+    return _item_op(text, nl, a, fn)
+
+
+def op_set_due(text, nl, a):
+    if a.due is None:
+        raise OpError("set-due には --due YYYY-MM-DD か --due \"YYYY-MM-DD H:MM\"（外すときは --due none）を指定してください。")
+    value = None if a.due == "none" else check_due(a.due)
+    if a.due_moved is not None and value is None:
+        raise OpError("--due-moved（一度移した印）は実施日（--due）と一緒にだけ使えます。--due none は印も一緒に外します。何も書いていません。")
+    moved = check_due_moved(a.due_moved) if a.due_moved is not None else None
+    if getattr(a, "due_from", None) is not None and value is None:
+        raise OpError("--due-from（元の実施日）は実施日（--due）と一緒にだけ使えます。--due none は元の実施日も一緒に外します。何も書いていません。")
+    came = check_due_from(getattr(a, "due_from", None))
+    if value:
+        lines = text.splitlines(keepends=True)
+        _it, inf = resolve_item(lines, a.item)
+        canon = _canon_label(inf["section"] or "")
+        if canon in TODAY_SIDE and a.due_moved is None:
+            raise OpError("項目「%s」は「%s」にあります。何も書いていません。先の日へ延ばすなら、実施日をユーザーに確かめてから move --section 明日以降 --due <実施日> で動かしてください（未定なら --due none）。"
+                          % (inf["key"], inf["section"])
+                          + DUE_TODAY_SIDE_RULE % "--due-moved <日付>。null なら --due-moved none")
+        if canon not in TODAY_SIDE and canon != TOMORROW:
+            raise OpError("実施日を付けられるのは「明日以降」の行（と、今日の予定・今日中で元の実施日を写し直す行）だけです。何も書いていません。項目「%s」は「%s」にあります。"
+                          "先の日へ延ばすなら、先に move --section 明日以降 で動かしてください。" % (inf["key"], inf["section"]))
+    today_side = bool(value) and canon in TODAY_SIDE
+
+    def fn(b):
+        v, mk, cm = value, moved, came
+        if today_side:
+            # 今日の側の行で実施日が今日でなければ（先の日の実施日は v1.9 から）、実施日を今日にする（add・create・Deck の日付の切り替えと同じ・v1.7）
+            # 行の時刻は操作の後の時刻（実施日に時刻があり時刻の欄があれば、下で時刻の欄をその時刻にそろえるので、その時刻・v1.9）
+            n_t = len(_TIME_OPEN_RE.findall("".join(b)))
+            pv = parse_due_value(v)
+            tm = (pv[1] if pv and pv[1] else _valid_hm(_time_text("".join(b)))) if n_t == 1 else None
+            v, mk, cm = roll_due_today(v, tm, mk, cm, date.today())
+        b = block_set_due(b, v, mk, cm)
+        pd = parse_due_value(v) if v else None
+        # 実施日に時刻を書いたら、時刻の欄があればそれも同じ時刻にする（行の時刻は1つ・v1.7。時刻の欄が無ければ足さない）
+        if pd and pd[1] and len(_TIME_OPEN_RE.findall("".join(b))) == 1:
+            b = block_set_time(b, nl, pd[1])
+        return b
+    return _item_op(text, nl, a, fn)
 
 
 def op_move(text, nl, a):
@@ -1261,8 +2027,9 @@ def op_move(text, nl, a):
     lines = text.splitlines(keepends=True)
     it, inf = resolve_item(lines, a.item)
     if _canon_section(inf["section"] or "") is None:
-        raise OpError("項目「%s」は見出し「%s」にあり、move で動かせるのは 今日の予定・今日中・明日以降 の項目だけです。何も書いていません。正式名の見出しへ移すなら、ユーザーに確かめてから add で足し直し、remove で元の行を消してください。"
-                      % (inf["key"], inf["section"]))
+        raise OpError(("項目「%s」は見出し「%s」にあり、move で動かせるのは 今日の予定・今日中・明日以降 の項目だけです。何も書いていません。"
+                       "正式名の見出しへ移すなら、ユーザーに確かめてから、" % (inf["key"], inf["section"]))
+                      + readd_order("add", readd_fields("控えた status")))
     before_s = None
     if a.before:
         bit, binf = resolve_item(lines, a.before, "--before")
@@ -1275,20 +2042,55 @@ def op_move(text, nl, a):
     block = lines[it["s"]:it["e"] + 1]
     if not block[-1].endswith(("\n", "\r")):
         block[-1] += nl
+    to_later = a.section == TOMORROW and _canon_section(inf["section"] or "") in TODAY_SIDE
+    due_arg = getattr(a, "due", None)
+    if due_arg is not None and not to_later:
+        raise OpError("--due（実施日）は、今日の予定・今日中の行を「明日以降」へ動かすときだけ使えます。何も書いていません。"
+                      "「明日以降」の行の実施日は set-due で変えてください。")
+    if to_later:
+        # 実施日はユーザーが決める（日付・時刻は任意、か未定）。印と元の実施日を外し、行の時刻は1つにする（v1.9・Deck v2.13 と同じ）
+        if due_arg is None:
+            raise OpError(MOVE_LATER_DUE_RULE % (inf["key"], inf["section"]))
+        pd = None
+        if str(due_arg).strip() != "none":
+            pd = parse_due_value(check_due(due_arg))
+            if pd[0] <= date.today():
+                raise OpError("実施日「%s」は今日以前です。何も書いていません。「明日以降」へ動かす行の実施日は明日以後の日付にしてください"
+                              "（今日やるなら今日の側に残す。決まっていなければ --due none）。" % due_arg)
+        shaped = _later_due_shape("".join(block), pd, nl)
+        if shaped is None:
+            raise OpError("項目「%s」は形が想定外で、実施日を当てられません。何も書いていません。" % inf["key"])
+        block = shaped.splitlines(keepends=True)
+    if _canon_section(inf["section"] or "") == TOMORROW and a.section != TOMORROW:
+        # 実施日のある行は、Deck の日付の切り替えと同じ形にする（時刻の欄・未チップ・一度移した印。印の有無・先の日の行かによらない＝v1.7）。
+        # 形が想定外なら、実施日の来た行に印だけ付ける
+        today = date.today()
+        joined = "".join(block)
+        due = _item_due_shapeable(joined)
+        shaped = _due_moved_shape(joined, due, today, nl, a.section == "今日の予定") if due else None
+        block = (shaped if shaped is not None else _mark_due_moved(joined, today)).splitlines(keepends=True)
     rest = lines[:it["s"]] + lines[it["e"] + 1:]
     secs, items = layout(rest)
     label_line = next((s["line"] for s in secs if _canon_section(s["label"]) == a.section), None)
     if label_line is None:
-        raise OpError("行き先の見出し「%s」がありません。何も書いていません。この版には見出しだけを作る操作がありません。ユーザーに確かめてから、動かす項目を add --section %s --create-section で（status の time・chip・note を写して）足し直し、remove で元の行を消してください。" % (a.section, a.section))
+        if not a.create_section:
+            raise OpError("行き先の見出し「%s」がありません。何も書いていません。見出しごと作って動かすなら --create-section を付けてください"
+                          "（見出しは add の --create-section と同じ位置に作り、行はその直後に置く。行の形は見出しがあるときと同じ）。" % a.section)
+        new, lab_at = insert_new_section(rest, a.section, block, nl, new_section_indent(rest))
+        return Result("".join(new), {"item": inf, "to": a.section, "created_section": True},
+                      touched_old={it["s"]}, touched_new={lab_at, lab_at + 1})
     if a.head:
         pos = label_line + 1
     elif before_s is not None:
         # 動かす項目を抜いた後の行番号へ直す（中身で探さない＝同じ中身の項目が2つあっても取り違えない）
         pos = before_s if before_s < it["s"] else before_s - (it["e"] - it["s"] + 1)
+    elif a.section == "今日の予定":
+        # 時刻のある行は時刻の順の位置へ（時刻の無い行・読めない行は見出しの末尾）
+        pos = plan_time_pos(rest, label_line, _block_minutes("".join(block)))
     else:
         pos = section_end(rest, label_line)
     new = rest[:pos] + block + rest[pos:]
-    return Result("".join(new), {"item": inf, "to": a.section}, touched_old={it["s"]}, touched_new={pos})
+    return Result("".join(new), {"item": inf, "to": a.section, "created_section": False}, touched_old={it["s"]}, touched_new={pos})
 
 
 def op_remove(text, nl, a):
@@ -1320,11 +2122,70 @@ def load_spec(path_or_obj):
     return spec
 
 
-ITEM_KEYS = ("section", "time", "title", "note", "chip", "crit")
+ITEM_KEYS = ("section", "time", "title", "note", "chip", "crit", "due", "due_moved", "due_from")
 
 
-def build_sections(spec, nl, indent="  "):
-    """create の spec → (セクションの行, 検証で見つけた拒否の理由の一覧)。"""
+def _spec_mark(it):
+    """spec の項目の一度移した印（due_moved）→ 日付の文字列か None。"""
+    return check_due_moved(it["due_moved"]) if it.get("due_moved") is not None else None
+
+
+def _hm_minutes(t):
+    m = HM_RE.match((t or "").strip())
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def _place_due_items(order, by, today, moved_out):
+    """「明日以降」の行で実施日が今日以前のものを、今日の側へ置き直す（Deck の日付の切り替えと同じ規則）。
+
+    済の行・一度移した印（due_moved）のある行は動かさない。実施日が今日で時刻があれば「今日の予定」の時系列の位置へ、それ以外は「今日中」の先頭へ。
+    前の日の時刻は今日の時刻にしない（今日のその時刻に通知が出るため）。"""
+    def label_of(name):
+        for s in order:
+            if _canon_label(s) == name:
+                return s
+        if name == "今日の予定":
+            at = 0
+        else:
+            plan = next((k for k, s in enumerate(order) if _canon_label(s) == "今日の予定"), None)
+            at = 0 if plan is None else plan + 1
+        order.insert(at, name)
+        return name
+
+    head = []
+    for sec in list(by):
+        if _canon_label(sec) != TOMORROW:
+            continue
+        keep = []
+        for it in by[sec]:
+            due = parse_due_value(check_due(it["due"])) if it.get("due") else None
+            if due is None or due[0] > today or it.get("chip") == "done" or _spec_mark(it):
+                keep.append(it)
+                continue
+            row = dict(it)
+            row["_moved"] = True
+            # 元の実施日を残す（実施日を今日にするのは build_sections の roll_due_today。実施日が今日の行はそこで変わらないので、ここで残す）
+            row["due_from"] = check_due_from(it.get("due_from")) or check_due(it["due"])
+            if row.get("chip") == "none":
+                del row["chip"]
+            if due[1] and due[0] == today:
+                row["time"] = due[1]
+                label = label_of("今日の予定")
+                rows = by.setdefault(label, [])
+                t = _hm_minutes(due[1])
+                at = next((k for k, r in enumerate(rows) if (_hm_minutes(r.get("time")) or -1) > t), len(rows))
+                rows.insert(at, row)
+            else:
+                label = label_of("今日中")
+                head.append((label, row))
+            moved_out.append({"title": it.get("title"), "due": check_due(it["due"]), "section": label})
+        by[sec] = keep
+    for label, row in reversed(head):
+        by.setdefault(label, []).insert(0, row)
+
+
+def build_sections(spec, nl, indent="  ", moved_out=None):
+    """create の spec → セクションの行。moved_out を渡すと、実施日で今日の側へ置いた行をそこへ足す。"""
     unknown = set(spec) - {"sections", "items"}
     if unknown:
         raise OpError("spec に知らないキーがあります（%s）。使えるのは sections と items だけです。" % "・".join(sorted(unknown)))
@@ -1341,7 +2202,10 @@ def build_sections(spec, nl, indent="  "):
             raise OpError("spec の items の %d 件目がオブジェクトではありません。" % n)
         for key, types, what in (("title", (str,), "文字列"), ("note", (str, type(None)), "文字列"),
                                  ("time", (str, type(None)), "\"H:MM\" の文字列"),
-                                 ("chip", (str, type(None)), "文字列"), ("crit", (bool, type(None)), "true か false")):
+                                 ("chip", (str, type(None)), "文字列"), ("crit", (bool, type(None)), "true か false"),
+                                 ("due", (str, type(None)), "\"YYYY-MM-DD\" か \"YYYY-MM-DD H:MM\" の文字列"),
+                                 ("due_moved", (str, type(None)), "\"YYYY-MM-DD\" の文字列か null"),
+                                 ("due_from", (str, type(None)), "\"YYYY-MM-DD\" か \"YYYY-MM-DD H:MM\" の文字列か null")):
             if key in it and not isinstance(it[key], types):
                 raise OpError("spec の items の %d 件目の %s は %s にしてください。" % (n, key, what))
         bad = set(it) - set(ITEM_KEYS)
@@ -1351,9 +2215,28 @@ def build_sections(spec, nl, indent="  "):
         sec = it.get("section")
         if not isinstance(sec, str) or not sec.strip():
             raise OpError("spec の items の %d 件目に section がありません。" % n)
+        if it.get("due_moved") is not None and it.get("due") is None:
+            raise OpError("spec の items の %d 件目: due_moved（一度移した印）は due と一緒にだけ書けます。" % n)
+        if it.get("due_from") is not None and it.get("due") is None:
+            raise OpError("spec の items の %d 件目: due_from（元の実施日）は due と一緒にだけ書けます。" % n)
+        check_due_from(it.get("due_from"))
+        if it.get("due") is not None:
+            check_due(it["due"])
+            _spec_mark(it)
+            canon = _canon_label(sec)
+            if canon in TODAY_SIDE and "due_moved" not in it:
+                raise OpError(("spec の items の %d 件目: due には due_moved も要ります。" % n)
+                              + DUE_TODAY_SIDE_RULE % "spec では \"due_moved\": \"<日付>\"。印が無ければ \"due_moved\": null"
+                              + "新しく書く今日の行なら due を外してください（先の日にやるなら「明日以降」へ書く）。")
+            if canon not in TODAY_SIDE and canon != TOMORROW:
+                raise OpError("spec の items の %d 件目: due（実施日）を付けられるのは「明日以降」の行と、今日の予定・今日中へ写し直す行だけです。今日の行なら due を外してください。" % n)
+            if canon == TOMORROW and it.get("time"):
+                raise OpError("spec の items の %d 件目: 「明日以降」の行では time と due は一緒に使えません。「明日以降」の行の時刻は due に含めてください（例 \"2026-11-04 22:05\"）。" % n)
         if sec not in order:
             order.append(sec)
         by.setdefault(sec, []).append(it)
+    today = date.today()
+    _place_due_items(order, by, today, [] if moved_out is None else moved_out)
     out = []
     for k, sec in enumerate(order):
         check_text(sec, "セクション名")
@@ -1372,8 +2255,29 @@ def build_sections(spec, nl, indent="  "):
             tm = check_time(it["time"]) if it.get("time") else None
             chip = check_chip(it["chip"]) if it.get("chip") else default_chip(sec)
             crit = bool(it.get("crit"))
-            out += build_item(indent, nl, title, note, chip, crit, tm)
+            attrs = ""
+            if it.get("due"):
+                dv = check_due(it["due"])
+                mk = today.isoformat() if it.get("_moved") else _spec_mark(it)
+                came = check_due_from(it.get("due_from"))
+                if _canon_label(sec) in TODAY_SIDE:
+                    # 今日の側の行で実施日が今日でなければ（先の日の実施日は v1.9 から）、実施日を今日にする（Deck の日付の切り替えと同じ・v1.7）
+                    dv, mk, came = roll_due_today(dv, tm, mk, came, today)
+                if tm and parse_due_value(dv)[1]:
+                    dv = dv.split(" ")[0] + " " + tm    # 行の時刻は1つ（add と同じ・v1.7）
+                attrs = due_attrs(dv, mk, came)
+            out += build_item(indent, nl, title, note, chip, crit, tm, attrs)
     return out
+
+
+DROPPED_TIMES_HEAD = ("まだ作り直していません。いまのボード（今日の板か、日付の読めない板）にある %d 行は、時刻の欄が H:MM でない（「午後」など）か、"
+                      "「明日以降」の行で実施日の時刻と違うため、このまま作り直すとその時刻が消えるか、spec の時刻に変わります（dropped_times）。")
+DROPPED_TIMES_RULE = ("板の時刻の欄は H:MM と決まっていて、H:MM でない時刻は作り直した板に残さない。「明日以降」の行で実施日に時刻があれば、"
+                      "作り直した板に残るのは実施日の時刻だけ（spec は「明日以降」の行で time と due を一緒に受けない）。dropped_times の行と、元の時刻（time）と、"
+                      "作り直した板での時刻（new_time。null なら時刻が消える）をユーザーに見せ、時刻をどうするか（H:MM の時刻にするか、消すか。"
+                      "「明日以降」の行で元の時刻が H:MM なら、元の時刻と実施日の時刻のどちらにするか）を確かめてください。"
+                      "H:MM にすると言われたら、その時刻を spec に書き（今日の予定・今日中の行と、due の無い「明日以降」の行は time に。「明日以降」の行で due があれば due に含める）、"
+                      "確かめた後に --confirmed を付けて create を実行してください（ユーザーに確かめずに H:MM を当てて --confirmed を付けない）。")
 
 
 def op_create(old_raw, a, board_path):
@@ -1403,7 +2307,8 @@ def op_create(old_raw, a, board_path):
     if s is None:
         raise OpError("テンプレートに {{SECTIONS}} のコメントがありません。ユーザーに、スキルを入れ直す（Windows では setup.bat をもう一度実行する）よう伝えてください（setup.bat は Claude が実行しない）。")
     e = next((i for i in range(s, len(tl)) if "-->" in tl[i]), None)
-    sec_lines = [x.rstrip("\n") for x in build_sections(spec, "\n")]
+    moved_due = []
+    sec_lines = [x.rstrip("\n") for x in build_sections(spec, "\n", moved_out=moved_due)]
     tl = tl[:s] + sec_lines + tl[e + 1:]
     text = "\n".join(tl)
     text = (text.replace("{{TITLE_DATE}}", fmt_title_date(today)).replace("{{FULL_DATE}}", full)
@@ -1416,39 +2321,57 @@ def op_create(old_raw, a, board_path):
         text = text.replace(deck_region(text), region, 1)
     if nl != "\n":
         text = text.replace("\n", nl)
-    payload = {"date": today.isoformat()}
+    payload = {"date": today.isoformat(), "moved_due": moved_due}
     extra = []
     if old_raw is not None:
-        # いまの板が今日のもので、Deck が引き継いだ板でもないなら、spec に無い行（消える行）があれば確かめる
+        # いまの板が今日のもので、Deck が引き継いだ板でもないなら、spec に無い行（消える行）と、時刻が消える行があれば確かめる
         # （ヘッダの日付が読めない板も同じに扱う＝2026-10-29 ユーザー判断）
         if old_text is not None and not getattr(a, "confirmed", False):
             bd = parse_board_date(board_header_date_text(old_text), today)
             if (bd == today or bd is None) and board_attr(old_text, "data-tb-rolled") is None:
-                missing, complete = missing_rows(old_text, spec)
+                missing, complete, dropped = match_rows(old_text, spec)
+                if dropped and not missing and complete:
+                    raise OpError(DROPPED_TIMES_HEAD % len(dropped) + DROPPED_TIMES_RULE + "置き換える前の板は history/ に残ります。",
+                                  missing=[], missing_incomplete=False, dropped_times=dropped)
                 if missing or not complete:
                     head = ("まだ作り直していません。いまのボード（今日の板か、日付の読めない板）にある %d 行が spec に入っていないため、"
                             "このまま作り直すとその行が消えます。" % len(missing)) if missing else \
                         ("まだ作り直していません。いまのボードは形が崩れているため、spec に入っていない行があるかを確かめきれません。")
                     msg = (head + "missing の行をユーザーに番号付きで見せ、残したい行を"
                            "選んでもらってください（4件以下なら選択肢で、5件以上なら番号で答えてもらう）。"
-                           "残すと言われた行を spec に足して、もう一度 create を実行してください。足さない行が残るときは、"
-                           "その行が消えることをユーザーが確かめてから --confirmed を付けてください。"
+                           "残すと言われた行を spec に足して（missing の time・chip・note・crit・due・due_moved・due_from を写し〔chip が none でも \"none\" と書く。省くと「明日以降」以外では「未」に変わる。"
+                           "今日の予定・今日中の行で due があれば、due_moved も対で書く（null のままでよい）。due_from は null なら書かなくてよい。"
+                           "「明日以降」の行に due があるときは、spec が time と due を一緒に受けないので、due に時刻が無く time が H:MM ならその時刻を due に含め（\"<due> <time>\"）、"
+                           "それ以外は time を書かない。due に時刻があり、time がそれと違う行は（H:MM でも）、作り直すと time が消えるので、"
+                           "残す行を選んでもらうときに due の時刻と一緒にユーザーに見せ、time の時刻にすると言われたら due に含める（\"<due の日付> <time>\"）。"
+                           "due の無い行の time は time に書く。time が H:MM でない行（「午後」など）は time を写さない"
+                           "（板の時刻の欄は H:MM と決まっていて、H:MM でない時刻は残さない）。その行の元の時刻は、残す行を選んでもらうときに一緒にユーザーに見せ、"
+                           "H:MM にすると言われたらその時刻を書く〕）、もう一度 create を実行してください。足さない行が残るとき・時刻が消えるか変わる行（H:MM でない時刻の行・「明日以降」で実施日の時刻と違う時刻の行）を足したときは、"
+                           "その行が消えること・その時刻が消えるか変わることをユーザーが確かめてから --confirmed を付けてください。"
                            "置き換える前の板は history/ に残ります。")
+                    if dropped:
+                        msg += (("また、spec に入っている %d 行も、時刻の欄が H:MM でないか、「明日以降」の行で実施日の時刻と違うため、このまま作り直すとその時刻が消えるか、spec の時刻に変わります（dropped_times）。"
+                                 % len(dropped)) + DROPPED_TIMES_RULE)
                     if not complete:
-                        msg += ("いまの板は形が崩れているため、missing の行のチップ・補足が欠けているか、拾えていない行があるかもしれません"
+                        msg += ("いまの板は形が崩れているため、missing の行の欄（チップ・補足・実施日など）が欠けているか、拾えていない行があるかもしれません"
                                 "（missing_incomplete）。また、置き換える前の板は形が崩れているため restore では戻せません。"
-                                "作り直す前に、いまの board.html を Read で読み、missing に無い行もユーザーに見せてください。")
-                    raise OpError(msg, missing=missing, missing_incomplete=not complete)
+                                "作り直す前に、いまの board.html を Read で読み、missing に無い行もユーザーに見せてください。"
+                                "欠けた欄は、その Read で読んだ板から写してください。")
+                    raise OpError(msg, missing=missing, missing_incomplete=not complete, dropped_times=dropped)
         if old_text is not None:
-            removed, complete = missing_rows(old_text, spec)
+            removed, complete, dropped = match_rows(old_text, spec)
             payload["removed"] = removed
             payload["removed_incomplete"] = not complete
+            payload["dropped_times"] = dropped
         else:
             payload["removed"] = None            # いまの板が UTF-8 で読めないので、消える行を数えられない
             payload["removed_incomplete"] = True
+            payload["dropped_times"] = None      # 同じく、時刻が消える行も数えられない
         bd = parse_board_date(board_header_date_text(old_text), today) if old_text is not None else None
         extra.append(("board-%s-before-create-%s" % ((bd or today).isoformat(), datetime.now().strftime("%H%M%S")),
                       old_raw, "saved"))
+    else:
+        payload["dropped_times"] = []            # 板が無い＝消える時刻も無い
     return Result(text, payload, intended_date=full, extra_writes=extra), bom
 
 
@@ -1488,6 +2411,9 @@ def create_history_file(board_path, stem, data):
         _rm(tmp)
 
 
+ANY_TIME = object()     # match_rows: 時刻を問わずに組にしてよい行の印
+
+
 def _norm_time(t):
     if t is None or not t.strip():
         return None
@@ -1496,22 +2422,121 @@ def _norm_time(t):
 
 
 def missing_rows(old_text, spec):
-    """いまの板の手書きの項目のうち、spec の items に同じ section＋time＋title が無いもの。(行の一覧, 拾いきれたか)。
+    """いまの板の手書きの項目のうち、spec の items のどの行とも組にならないもの（消える行）。(行の一覧, 拾いきれたか)。
+    組にする規則（section＋time＋title。「明日以降」の行は実施日の日付と時刻〔実施日の時刻、無ければ H:MM の時刻の欄〕。時刻の欄が H:MM でない行は
+    時刻を問わない）は match_rows のとおり。"""
+    missing, complete, _dropped = match_rows(old_text, spec)
+    return missing, complete
 
-    各行の no は、この一覧の中の番号（1 から）。status の index（板の中の番号）とは別物なので、
+
+def match_rows(old_text, spec):
+    """いまの板の手書きの項目を spec の items と組にする。(消える行の一覧, 拾いきれたか, 時刻が落ちる行の一覧) を返す。
+
+    消える行＝spec に同じ section＋time＋title（「明日以降」の行は実施日の日付も）が無い行。同じ鍵の行が spec より多ければ、
+    多い分を消える行に数える（同じタイトルの2行に spec が1行など）。
+    「明日以降」の行で実施日のあるものの time は、実施日の時刻とみなす（無ければ H:MM の時刻の欄。Deck v2.11 が当日に使うのは、時刻の欄が
+    H:MM ならその時刻、無ければ実施日の時刻で、v1.7 の操作でできた行では両方あれば同じ値。食い違う行は下のとおり、どちらの時刻でも組にする。
+    時刻の欄を due に含めて写した行・due に時刻があり時刻の欄を写さなかった行を、消える行に数えない）。
+    時刻の欄が H:MM でない行（「午後」など）は、時刻を比べずに section＋title（と実施日の日付）で組にする（spec の time は
+    H:MM だけを受けるので、時刻なしで入れても、ユーザーに確かめた H:MM で入れても、同じ行とみなす）。
+    「明日以降」の行で実施日に時刻があり、時刻の欄がそれと違う行（食い違う行。v1.5）は、spec の実施日の時刻が実施日の時刻でも
+    時刻の欄の時刻でも、時刻なし（日付だけ）でも同じ行とみなす（時刻の欄が H:MM でなければ時刻を問わない。どちらの時刻を残すか、
+    どちらも消すかをユーザーに確かめた後に、選んだとおりに due を写せるように。時刻なしで組になれば new_time は None）。
+    組にする順は、H:MM の行・時刻の無い行を先に、鍵が同じものから（H:MM でない行・食い違う行が、ほかの行の組を横取りしないため）。
+    鍵が同じでない組は、食い違う H:MM の行（時刻の欄の時刻、次に時刻なし）を先に、時刻を問わない行（ANY_TIME）を後にする
+    （「午後」の行が、時刻の欄の時刻で組にしたい行の spec の行を横取りしないため）。ANY_TIME の行どうし（同じタイトル・同じ実施日の
+    日付の「午後」の行が2つなど）は、板の上からの順に spec の行を取るので、spec の行の順によっては、ユーザーが選んだ時刻と違う行と
+    組になることがある（どちらの行も消える行には出ない。dropped_times の time と new_time で確かめる）。
+
+    時刻が落ちる行＝spec と組になった行のうち、時刻の欄が空でなく、作り直した板で表示されていた時刻が消えるか変わるもの——
+    時刻の欄が H:MM でない、時刻の欄が作り直した板の時刻（new_time）と違う、または「明日以降」の行で実施日の時刻が new_time と違う。
+    new_time は作り直した板で使われる時刻（今日の予定・今日中の行と、実施日の無い「明日以降」の行は spec の time、
+    「明日以降」の行で実施日のあるものは spec の実施日の時刻。どちらも無ければ None）。板の時刻の欄は H:MM と決まっていて、
+    H:MM でない時刻は作り直した板に残らず、消えるか spec の時刻に変わる。「明日以降」の行で実施日のあるものは、spec が time と due を
+    一緒に受けないので、作り直した板には時刻の欄が無く、残るのは実施日の時刻だけ——時刻の欄と実施日の時刻が食い違う行は、
+    どれを選んでも板に表示されていた時刻の少なくとも一方が消える（いまの板のまま今日の側へ動かすと、時刻の欄の時刻が使われる・v1.7）。
+    どれもユーザーが書いた時刻が確かめなしに変わるので、ユーザーが確かめる。時刻の欄と実施日の時刻が同じ行は数えない
+    （「明日以降」の行では、作り直した板に時刻の欄は無くなるが、同じ時刻が実施日に残り、今日の側へ動かすときはそれが使われる。
+    一度移した印の有無によらない＝v1.7。v1.6 までは、印のある行を move・D&D で今日の側へ動かすと時刻の欄が使われ、作り直した後は時刻が無くなった）。今日の予定・今日中の行と、実施日の無い「明日以降」の行で、H:MM の時刻の欄で組になったものは、
+    時刻が同じなので数えない。各行の due は元の行の実施日（無ければ None）。
+
+    各行の no は、それぞれの一覧の中の番号（1 から）。status の index（板の中の番号）とは別物なので、
     板の中の番号は status_index として持たせる（ユーザーに見せる番号は no）。
     """
-    want = set()
-    for it in spec.get("items") or []:
-        want.add((it.get("section"), _norm_time(it.get("time")), it.get("title")))
+    def key(section, time, title, due):
+        # 「明日以降」の行は、実施日の日付と時刻（実施日の時刻、無ければ H:MM の時刻の欄。v1.7 の操作では、両方あれば同じ値）で比べる。
+        # 時刻を due に含めて写した行（spec は「明日以降」の行で time と due を一緒に受けない）を、消える行に数えないため
+        raw = time
+        day = None
+        alt = None
+        if isinstance(due, str) and due.strip() and _canon_label(section or "") == TOMORROW:
+            try:
+                pd = parse_due_value(check_due(due))
+            except OpError:
+                pd = None
+            if pd is None:
+                day = None          # 読めない実施日は比べない（spec はその値を受けないので、比べると行を残す手段が無くなる）
+            else:
+                day = pd[0].isoformat()
+                if pd[1]:
+                    time = pd[1]
+                    # 時刻の欄が実施日の時刻と違う行（食い違う行）は、時刻の欄の時刻（H:MM でなければどの時刻でも）でも組にしてよい
+                    if isinstance(raw, str) and raw.strip() and _norm_time(raw) != pd[1]:
+                        alt = _norm_time(raw) if HM_RE.match(raw.strip()) else ANY_TIME
+                elif not (isinstance(time, str) and HM_RE.match(time.strip())):
+                    time = None
+        if isinstance(time, str) and time.strip() and not HM_RE.match(time.strip()):
+            time = None         # H:MM でない時刻は比べない（spec の time は H:MM だけを受けるので、比べると行を残す手段が無くなる）
+        # 時刻の欄が H:MM でなく、実施日からも時刻が決まらない行は、時刻を問わずに組にしてよい（wild）
+        if isinstance(raw, str) and bool(raw.strip()) and not HM_RE.match(raw.strip()) and time is None:
+            alt = ANY_TIME
+        return (section, _norm_time(time), title, day), alt
+
+    want = [key(it.get("section"), it.get("time"), it.get("title"), it.get("due"))[0] for it in spec.get("items") or []]
+    used = [False] * len(want)
     entries, complete = item_entries(old_text)
-    rows = [e for e in entries if (e["section"], _norm_time(e["time"]), e["title"]) not in want]
-    out = []
-    for n, e in enumerate(rows, 1):
-        r = {"no": n, "status_index": e["index"]}
-        r.update({k: e[k] for k in ("section", "time", "title", "chip", "note")})
-        out.append(r)
-    return out, complete
+    keyed = [(e,) + key(e["section"], e["time"], e["title"], e["due"]) for e in entries]
+    pair = {}
+
+    def take(n, ok):
+        for j, w in enumerate(want):
+            if not used[j] and ok(w):
+                used[j] = True
+                pair[n] = w
+                return True
+        return False
+
+    for n, (e, k, alt) in enumerate(keyed):
+        if alt is None:
+            take(n, lambda w, k=k: w == k)
+    for n, (e, k, alt) in enumerate(keyed):
+        if alt is not None:
+            take(n, lambda w, k=k: w == k)
+    # 時刻を問わない組は、食い違う H:MM の行（時刻の欄の時刻、次に時刻なし）を先に、ANY_TIME の行を後に
+    # （ANY_TIME の行が、時刻の欄の時刻で組にしたい行の spec の行を横取りしないため）
+    same = lambda w, k: (w[0], w[2], w[3]) == (k[0], k[2], k[3])
+    for want_time in ("alt", None):
+        for n, (e, k, alt) in enumerate(keyed):
+            if alt is not None and alt is not ANY_TIME and n not in pair:
+                take(n, lambda w, k=k, t=(alt if want_time == "alt" else None): same(w, k) and w[1] == t)
+    for n, (e, k, alt) in enumerate(keyed):
+        if alt is ANY_TIME and n not in pair:
+            take(n, lambda w, k=k: same(w, k))
+    out, dropped = [], []
+    for n, (e, k, alt) in enumerate(keyed):
+        if n not in pair:
+            r = {"no": len(out) + 1, "status_index": e["index"]}
+            r.update({f: e[f] for f in ("section", "time", "title", "chip", "note", "crit", "due", "due_moved", "due_from")})
+            out.append(r)
+            continue
+        t, new = e["time"], pair[n][1]
+        # 時刻の欄が H:MM でない行・作り直した板の時刻と違う行と、「明日以降」の行で実施日の時刻が変わる行（時刻の欄が実施日の時刻と
+        # 食い違う行は、どちらを選んでもこれに当たる。v1.5）。時刻の欄が無い行は数えない（実施日の時刻を変えたのは spec を書いた側）
+        if isinstance(t, str) and t.strip() and (not HM_RE.match(t.strip()) or _norm_time(t) != new
+                                                  or (alt is not None and k[3] is not None and k[1] is not None and k[1] != new)):
+            dropped.append({"no": len(dropped) + 1, "status_index": e["index"], "section": e["section"],
+                            "time": t, "new_time": new, "title": e["title"], "due": e["due"]})
+    return out, complete, dropped
 
 
 def fmt_full_date(d):
@@ -1609,7 +2634,7 @@ def item_entries(text):
     そのとき、閉じが合わない項目やタイトルの無い項目があれば「拾いきれていない」（False）とする。
     """
     lines = text.splitlines(keepends=True)
-    keys = ("index", "section", "time", "title", "note", "chip", "crit", "carried")
+    keys = ("index", "section", "time", "title", "note", "chip", "crit", "carried", "due", "due_moved", "due_from")
     if board_structure_ok(lines):
         return [{k: inf[k] for k in keys} for inf in all_item_infos(lines)], True
     blanked = _blank_comments(lines)
@@ -1634,19 +2659,22 @@ def item_entries(text):
         for (i, lb) in labels:
             if i < st:
                 sec = lb
-        t = _element_text(seg, "time")
+        t = _key_text(seg, "time", stop_at_class=True)    # status の time と同じ読み方（v1.10）
         title = _element_text(seg, "task-title")
         m = re.search(r'\sdata-carried-from="([^"]*)"', lines[st])
         if title is None or _div_balance(seg) != 0:
             complete = False
         out.append({"index": n, "section": sec, "time": t.strip() if t is not None else None, "title": title,
                     "note": _element_text(seg, "task-note"), "chip": status_chip(seg),
-                    "crit": "crit" in _open_tag_classes(seg), "carried": m.group(1) if m else None})
+                    "crit": "crit" in _open_tag_classes(seg), "carried": m.group(1) if m else None,
+                    "due": _item_open_attr(seg, "data-due"), "due_moved": _item_open_attr(seg, "data-due-moved"),
+                    "due_from": _item_open_attr(seg, "data-due-from")})
     return out, complete
 
 
 def _entry_cmp(e):
-    return (e["section"], e["time"], e["title"], e["note"], e["chip"], e["crit"], e["carried"])
+    return (e["section"], e["time"], e["title"], e["note"], e["chip"], e["crit"], e["carried"], e["due"], e["due_moved"],
+            e["due_from"])
 
 
 def op_restore(old_raw, a, board_path):
@@ -1683,15 +2711,16 @@ def op_restore(old_raw, a, board_path):
     src_e, _src_complete = item_entries(src_text)
     cur_keys = [_entry_cmp(e) for e in cur_e]
     src_keys = [_entry_cmp(e) for e in src_e]
-    strip = lambda e: {k: e[k] for k in ("section", "time", "title", "note", "chip", "crit", "carried")}
+    strip = lambda e: {k: e[k] for k in ("section", "time", "title", "note", "chip", "crit", "carried", "due", "due_moved", "due_from")}
     diff = {"only_now": [strip(e) for e in cur_e if _entry_cmp(e) not in src_keys],
             "only_restore": [strip(e) for e in src_e if _entry_cmp(e) not in cur_keys],
             "now_broken": bool(structure_errors(cur_text)),
             "only_now_incomplete": not cur_complete}
     incomplete_note = ("" if cur_complete else
-                       "いまの板は形が崩れているため、only_now の行のチップ・補足が欠けているか、拾えていない行がある"
+                       "いまの板は形が崩れているため、only_now の行の欄（チップ・補足・実施日など）が欠けているか、拾えていない行がある"
                        "かもしれません（only_now_incomplete）。戻す前に、いまの board.html を Read で読み、only_now に無い行も"
-                       "ユーザーに見せてください。")
+                       "ユーザーに見せてください。欠けた欄は、その Read で読んだ板から写してください"
+                       "（戻した後は、戻す前の板が saved の名前で history/ に残ります）。")
     if not a.confirmed:
         return Result(None, {"from": rel, "diff": diff,
                              "message": "まだ戻していません。diff（only_now＝いまの板にだけある行・only_restore＝戻す版にだけある行）を"
@@ -1701,7 +2730,10 @@ def op_restore(old_raw, a, board_path):
     if nl != "\n":
         text = text.replace("\n", nl)
     res = Result(text, {"from": rel, "diff": diff,
-                        "message": "戻しました。戻す前の板は saved の名前で残しています。only_now の行をユーザーに見せ、足し直してよいと言われた行だけを add で足し直してください。"},
+                        "message": "戻しました。戻す前の板は saved の名前で残しています。only_now の行をユーザーに見せ、" + restore_readd_text("only_now") + (
+                            "" if cur_complete else
+                            "戻す前の板は形が崩れていたため、only_now の行の欄が欠けているか、拾えていない行があるかもしれません"
+                            "（only_now_incomplete）。saved の板を Read で読み、欠けた欄はそこから写し、only_now に無い行もユーザーに見せてください。")},
                  intended_date=cur_date, extra_writes=[(stem, old_raw, "saved")])
     return res, bom
 
@@ -1883,6 +2915,9 @@ def op_status(board_path):
     out["sections"] = [{"name": s["label"], "items": [inf for inf in infos if inf["section"] == s["label"]
                                                        and items[inf["index"] - 1]["sec_line"] == s["line"]]}
                        for s in secs]
+    out["due_now"] = [inf for inf, it in zip(infos, items)
+                      if _canon_label(inf["section"] or "") == TOMORROW
+                      and _item_due_pending("".join(lines[it["s"]:it["e"] + 1]), today)]
     orphans = [inf for inf in infos if inf["section"] is None]
     if orphans:
         out["items_before_sections"] = orphans
@@ -1907,6 +2942,211 @@ def board_attr(text, name):
         return None
     a = re.search(r'\s%s="([^"]*)"' % re.escape(name), m.group(1))
     return a.group(1) if a else None
+
+
+# ================================================================ Deck を起動し直す前後の確かめ（v1.2・読むだけ）
+#
+# 配った板（Deck v2.9 が http://127.0.0.1:<ポート>/?v=<表示の鍵> で配る板）を開いたまま Deck を起動し直すと、
+# ポートと表示の鍵が替わることがある。起動し直した直後の板には止まった Deck の接続情報が残っているので
+# （Deck は止まっても #deck-key を消さず、新しい Deck が書くのは常駐の1周目）、data-k（起動ごとのトークン）が
+# 替わるまで待ってから比べる。待ち・打ち切り・watcher.log の読み分けを1回の呼び出しの中で行い、上限で必ず終わる。
+# 出力にはトークンと表示の鍵を出さない（指紋〔sha256 の先頭〕だけ。新しい URL は --print-url のときだけ出す）。
+
+DECK_KEY_TAG_RE = re.compile(r'<span id="deck-key"[^>]*>')
+DECK_LOG_TIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
+# watcher.log の読み分け（deck/deck_watcher.py が書く文言。上から順に見る）
+DECK_LOG_KINDS = (
+    ("duplicate", "多重起動を検出"),
+    ("no-port", "をすべてバインドできません"),
+    ("no-marker", "DECK:AUTO マーカーが見つかりません"),
+)
+DECK_LOG_STARTED = "常駐モード開始"
+DECK_LOG_REGEN = "再生成: セッション"   # 板へ書けたときの行（書けなかったときの行では数えない）
+DECK_LOG_REGEN_SKIPPED = "再生成: 書く直前に"   # 書けなかったときの行（数えないが log には入れる＝書き込みが競合したことが見える）
+DECK_LOG_SERVER = "受信サーバ起動"
+DECK_FP_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _fp(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16] if value else None
+
+
+def _tag_attr(tag, name):
+    m = re.search(r'\s%s="([^"]*)"' % re.escape(name), tag)
+    return html.unescape(m.group(1)) if m else None
+
+
+def read_deck_key(board_path):
+    """board.html の DECK マーカーの間の #deck-key を読む。
+    目印が START・END の順に1つずつ、別々の行にあるときだけ間を読む（skill/SKILL.md の読み方と同じ。目印の外に残った
+    古い #deck-key は読まない）。戻り値 {"markers": "ok"|理由, "present": bool, "k": …, "port": …, "view": …}"""
+    out = {"markers": "ok", "present": False, "k": None, "port": None, "view": None}
+    try:
+        with open(board_path, "rb") as f:
+            text = f.read().decode("utf-8-sig", errors="replace")
+    except OSError:
+        out["markers"] = "no-board"
+        return out
+    if text.count(MARKER_START) != 1 or text.count(MARKER_END) != 1:
+        out["markers"] = "count"
+        return out
+    a, b = text.index(MARKER_START), text.index(MARKER_END)
+    if not a < b:
+        out["markers"] = "order"
+        return out
+    region = text[a + len(MARKER_START):b]
+    if "\n" not in region:
+        out["markers"] = "same-line"
+        return out
+    m = DECK_KEY_TAG_RE.search(region)
+    if not m:
+        return out
+    tag = m.group(0)
+    out["k"] = _tag_attr(tag, "data-k") or None
+    port = _tag_attr(tag, "data-port")
+    out["port"] = int(port) if port and port.isascii() and port.isdigit() and 1 <= int(port) <= 65535 else None
+    out["view"] = _tag_attr(tag, "data-view") or None
+    out["present"] = bool(out["k"]) and out["port"] is not None
+    return out
+
+
+def _public_key(key):
+    return {"markers": key["markers"], "present": key["present"], "k_fp": _fp(key["k"]) if key["present"] else None,
+            "port": key["port"] if key["present"] else None, "view_fp": _fp(key["view"]) if key["present"] else None}
+
+
+def default_deck_log(board_path):
+    return os.path.join(os.path.dirname(os.path.abspath(board_path)), "deck", "watcher.log")
+
+
+def deck_log_since(log_path, since):
+    """watcher.log のうち、時刻が since（YYYY-MM-DD HH:MM:SS）以後の行。時刻の読めない行は直前の行と同じ扱いにする。"""
+    try:
+        with open(log_path, "rb") as f:
+            lines = f.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out, keep = [], False
+    for ln in lines:
+        m = DECK_LOG_TIME_RE.match(ln)
+        if m:
+            keep = m.group(1) >= since
+        if keep:
+            out.append(ln)
+    return out
+
+
+def classify_deck_log(lines):
+    """起動し直した後の watcher.log の行から、data-k が替わらない理由を読み分ける。
+    duplicate／no-port／no-marker／collecting（常駐を始めたが、まだ再生成もこれらの行も無い）／unknown／not-started"""
+    for kind, word in DECK_LOG_KINDS:
+        if any(word in ln for ln in lines):
+            return kind
+    started = [i for i, ln in enumerate(lines) if DECK_LOG_STARTED in ln]
+    if not started:
+        return "not-started"
+    after = lines[started[-1] + 1:]
+    if any(DECK_LOG_REGEN in ln for ln in after):
+        return "unknown"
+    return "collecting"
+
+
+def _parse_since(value):
+    try:
+        datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        raise OpError("--since は deck-snap が返した since（YYYY-MM-DD HH:MM:SS）をそのまま渡してください。")
+    return value
+
+
+def op_deck_snap(board_path):
+    key = read_deck_key(board_path)
+    return dict(since=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), deck_key=_public_key(key),
+                prev_k_fp=_fp(key["k"]) if key["present"] else "none")
+
+
+def _seconds(value, name):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        v = None
+    if v is None or not math.isfinite(v):
+        raise OpError("--%s は秒の数（有限の数）で指定してください。" % name)
+    return v
+
+
+def op_deck_wait(board_path, a, sleep=time.sleep, clock=time.monotonic):
+    prev = a.prev_k_fp
+    if not prev or not (prev == "none" or DECK_FP_RE.match(prev)):
+        raise OpError("--prev-k-fp に、起動し直す前の deck-snap が返した prev_k_fp（16 桁の 16 進か none）をそのまま渡してください。")
+    since = _parse_since(a.since)
+    log_path = os.path.abspath(os.path.expanduser(a.log)) if a.log else default_deck_log(board_path)
+    url_port = url_view = None
+    if a.url:
+        try:
+            u = urllib.parse.urlsplit(a.url)
+            url_port = u.port            # ポートが数でない・範囲外なら ValueError。ポートの無い URL は None（比べずに written）
+        except ValueError:
+            raise OpError("--url の形が正しくありません（ポートを読めません）。開いている板の URL をそのまま渡してください。")
+        url_view = (urllib.parse.parse_qs(u.query).get("v") or [None])[0]
+    interval = max(0.01, _seconds(a.interval, "interval"))
+    limit, extra = max(0.0, _seconds(a.limit, "limit")), max(0.0, _seconds(a.extra, "extra"))
+    start = clock()
+    deadline = start + limit
+    extended = False
+    key = None
+    result = None
+    while True:
+        key = read_deck_key(board_path)
+        cur = _fp(key["k"]) if key["present"] else "none"
+        # 読めなかった周回（板が無い・開けない）と、目印が崩れていて間を読めない周回は、替わったかどうかの判断に使わない
+        # （崩れた板では接続情報が「消えた」と見分けられないため。上限まで崩れたままなら board-markers を返す）
+        if key["markers"] == "ok" and cur != prev:
+            # 替わった（#deck-key が現れた・替わった・消えた）
+            if not key["present"]:
+                result = "no-key"
+            elif url_port is None:
+                result = "written"
+            elif key["port"] == url_port and key["view"] == url_view:
+                result = "same-url"
+            else:
+                result = "open-new-url"
+            break
+        lines = deck_log_since(log_path, since)
+        kind = classify_deck_log(lines)
+        if kind == "duplicate":
+            result = kind          # 新しい Deck はもう終わっている。待っても替わらない
+            break
+        if clock() >= deadline:
+            if key["markers"] not in ("ok", "no-board"):
+                result = "board-markers"
+                break
+            if kind == "collecting" and not extended:
+                extended = True
+                deadline += extra
+                continue
+            result = "not-written-yet" if kind == "collecting" else kind
+            break
+        # 最後の待ちは残り時間で切り詰める（待ちの合計が limit＋extra を超えない）
+        sleep(max(0.0, min(interval, deadline - clock())))
+    lines = deck_log_since(log_path, since)
+    # 起動の手がかりの行（最後の 10 行と、手がかりの文言ごとの最後の1行）と、unknown のときの「再生成: セッション」の行の最後の1行と、
+    # 書けなかった「再生成: 書く直前に」の行の最後の1行を、元の順に並べる
+    # （「再生成」の行がいくつ続いても「常駐モード開始」「受信サーバ起動」などを押し出さない。書けなかった行の数は skipped_writes）
+    clue_words = [w for _k, w in DECK_LOG_KINDS] + [DECK_LOG_STARTED, DECK_LOG_SERVER]
+    main_at = [i for i, ln in enumerate(lines) if any(w in ln for w in clue_words)]
+    last_each = [max(i for i in main_at if w in lines[i]) for w in clue_words if any(w in lines[i] for i in main_at)]
+    regen_at = [i for i, ln in enumerate(lines) if DECK_LOG_REGEN in ln] if result == "unknown" else []
+    skipped_at = [i for i, ln in enumerate(lines) if DECK_LOG_REGEN_SKIPPED in ln]
+    picked = [lines[i] for i in sorted(set(main_at[-10:]) | set(last_each) | set(regen_at[-1:]) | set(skipped_at[-1:]))]
+    out = dict(result=result, waited_sec=round(clock() - start, 1), extended=extended,
+               deck_key=_public_key(key), log=picked, skipped_writes=len(skipped_at), log_path=log_path)
+    if a.url and key["present"]:
+        out["port_changed"] = key["port"] != url_port
+        out["view_changed"] = key["view"] != url_view
+    if a.print_url and result in ("open-new-url", "written") and key["present"] and key["view"]:
+        out["url"] = "http://127.0.0.1:%d/?v=%s" % (key["port"], urllib.parse.quote(key["view"], safe=""))
+    return out
 
 
 # ================================================================ コマンドライン
@@ -1937,7 +3177,8 @@ def build_parser():
         return sp
 
     add("status", "板の状態を JSON で返す（書かない）。mode・state_date・board_date・live・rolled・suggest（create か update か）・"
-                  "セクションと項目の一覧（index・key・time・title・note・chip・crit・carried）・進捗・検査の結果・"
+                  "セクションと項目の一覧（index・key・time・title・note・chip・crit・carried・due・due_moved・due_from）・"
+                  "due_now（「明日以降」の行で実施日が今日以前のもの）・進捗・検査の結果・"
                   "restorable（history/ にある、restore が受ける名前の版）・restorable_today（そのうち、いまの板と日付が同じで形の正しい、"
                   "restore で実際に戻せる版）")
     sp = add("create", "spec（JSON）から今日のボードを作り、静的ファイル3つを board.html の隣へ写す。"
@@ -1946,18 +3187,30 @@ def build_parser():
                        "（前の日の板・日付の読めない板・形の崩れた板は history/ に残るだけで、restore では戻せない）。"
                        "いまの板が今日のものか日付の読めない板で（Deck が引き継いだ板を除く）、spec に無い行があるとき、"
                        "または形が崩れていて spec に無い行を拾いきれないときは、--confirmed が無ければ書かずに missing（消える行）と"
-                       " missing_incomplete（拾いきれていないとき true）を返す。state.json は書かない（SKILL.md の手順で書く）")
-    sp.add_argument("--confirmed", action="store_true", help="spec に無い行が消えることをユーザーが確かめた後に付ける")
-    sp.add_argument("--spec", help="{\"sections\": [見出し…], \"items\": [{\"section\", \"time\"?, \"title\", \"note\"?, \"chip\"?, \"crit\"?}…]} の JSON ファイル")
+                       " missing_incomplete（拾いきれていないとき true）を返す。同じ板で、時刻の欄が H:MM でない（「午後」など）行を spec に時刻なしで"
+                       "入れたとき・H:MM の時刻で入れたとき、「明日以降」の行で時刻の欄が実施日の時刻と違う（H:MM でも。v1.5 から）行を入れたときも、--confirmed が無ければ書かずに dropped_times（時刻が消えるか変わる行。new_time は作り直した板での時刻か null）を返す（板の時刻の欄は H:MM と決まっていて、"
+                       "H:MM でない時刻は残さない）。書いた後の出力にも removed（消えた行）と dropped_times（時刻が消えたか変わった行）を出す（v1.4 から）。"
+                       "state.json は書かない（SKILL.md の手順で書く）")
+    sp.add_argument("--confirmed", action="store_true", help="spec に無い行が消えること・時刻の欄の時刻が消えるか変わること（dropped_times）をユーザーが確かめた後に付ける")
+    sp.add_argument("--spec", help="{\"sections\": [見出し…], \"items\": [{\"section\", \"time\"?, \"title\", \"note\"?, \"chip\"?, \"crit\"?, \"due\"?, \"due_moved\"?, \"due_from\"?}…]} の JSON ファイル。"
+                                            "「明日以降」の行で due が今日以前・due_moved が無いものは、今日の側へ置く（出力の moved_due。実施日は今日になり、元の実施日は due_from に残る）。"
+                                            "今日の予定・今日中の行の due は、元の行の due と due_moved（と due_from）を写すときだけ書く"
+                                            "（due が今日でなければ、実施日を今日にし、元の実施日を due_from に残す・v1.7。先の日の due は v1.9 から）")
     sp = add("add", "見出しの中に項目を1行足す（必ず足す。重複かどうかは先に status で確かめる）")
     sp.add_argument("--section", required=False, help="足す先の見出し")
     sp.add_argument("--create-section", action="store_true", help="見出しが無ければ作る")
-    sp.add_argument("--after", help="この項目の直後に足す（既定は見出しの末尾）")
+    sp.add_argument("--after", help="この項目の直後に足す（既定は見出しの末尾。今日の予定へ時刻付きの行を足すときは時刻の順の位置）")
     sp.add_argument("--head", action="store_true", help="見出しの直後（先頭）に足す")
     sp.add_argument("--title")
     sp.add_argument("--note")
     sp.add_argument("--chip", help="done・active・pending・wait・hold・none（既定は「明日以降」なら none、それ以外は pending）")
     sp.add_argument("--time", help="H:MM（付けると時刻付きの行、無ければ時刻なしの行）")
+    sp.add_argument("--due", help="実施日。YYYY-MM-DD か YYYY-MM-DD H:MM。「明日以降」の行（--time とは一緒に使えない）と、"
+                                  "今日の予定・今日中へ足し直す行（元の行の due を写すとき。--due-moved と対で）に付く")
+    sp.add_argument("--due-moved", help="一度移した印の日付（YYYY-MM-DD）か none。足し直す行に元の行の due_moved を写すときに --due と一緒に使う"
+                                        "（今日の予定・今日中の行では --due に必ず添える）")
+    sp.add_argument("--due-from", help="元の実施日（YYYY-MM-DD か YYYY-MM-DD H:MM）か none。足し直す行に元の行の due_from を写すときに --due と一緒に使う"
+                                       "（null なら省く。v1.7）")
     sp = add("set-chip", "項目の状態チップを替える（wait＝条件待ち・none＝チップを外す）")
     sp.add_argument("--item")
     sp.add_argument("--chip")
@@ -1968,17 +3221,58 @@ def build_parser():
     sp = add("set-crit", "重要タスクを付ける（on）／外す（off）。項目の crit と「重要タスク」のチップの両方を付け外しする")
     sp.add_argument("--item")
     sp.add_argument("value", nargs="?", help="on か off")
-    sp = add("set-time", "項目の時刻を替える（--time none で時刻を外す）")
+    sp = add("set-time", "項目の時刻を替える（--time none で時刻を外す）。実施日のある行では、実施日の時刻も同じ値にする"
+                         "（--time none なら実施日の時刻も外す。時刻の欄の無い行の --time none は何もしない。日付と一度移した印は変えない。v1.7）")
     sp.add_argument("--item")
     sp.add_argument("--time")
-    sp = add("move", "項目を 今日の予定・今日中・明日以降 の間で動かす（Deck の D&D と同じ規則）")
+    sp = add("set-due", "「明日以降」の行の実施日を付ける・直す（--due none で印と一緒に外す）。実施日が来ると Deck の日付の切り替えが今日の側へ移す。"
+                        "今日の予定・今日中の行には、元の行の実施日を写し直すときだけ --due-moved と対で付ける。"
+                        "時刻を含めて付けると、時刻の欄があればそれも同じ時刻にする（時刻の欄が無ければ足さない。v1.7）")
+    sp.add_argument("--item")
+    sp.add_argument("--due", help="YYYY-MM-DD か YYYY-MM-DD H:MM か none")
+    sp.add_argument("--due-moved", help="一度移した印の日付（YYYY-MM-DD）か none（省くと印を外す。今日の予定・今日中の行では --due に必ず添える）")
+    sp.add_argument("--due-from", help="元の実施日（YYYY-MM-DD か YYYY-MM-DD H:MM）か none（省くと外す。元の行の due_from を写すときに付ける・v1.7）")
+    sp = add("move", "項目を 今日の予定・今日中・明日以降 の間で動かす（位置は Deck の D&D と同じ。ただし今日の予定へは、--before・--head が無ければ"
+                     "時刻の順の位置へ入る）。実施日のある「明日以降」の行を今日の側へ動かすときは、Deck の日付の切り替えと同じ形にする"
+                     "（今日の予定へは実施日が今日なら時刻の欄をその行の時刻〔時刻の欄が H:MM ならそれ、無ければ実施日の時刻〕にし、それ以外と今日中へは時刻の欄を外す〔行の時刻は data-due か data-due-from に残り、data-orig-time には残さない＝v1.8。H:MM でない時刻の欄の文字と、data-due-from が既にある行で時刻の欄の時刻がその時刻と違うときの時刻の欄の時刻は、どこにも残らない〕。"
+                     "状態チップが無ければ未を付け、実施日を今日にし、元の実施日を data-due-from に残し、一度移した印を付ける。印のある行・実施日の前の行も同じ形にする＝v1.7。実施日の前の行〔先の日の行〕も今日の行として扱い、実施日を今日にして時刻の欄を外し〔今日の予定へも時刻は付かない〕、元の予定を data-due-from に残し、印を付ける＝v1.9）。"
+                     "今日の予定・今日中の行を「明日以降」へ動かすときは --due が要る（ユーザーに確かめた実施日か none＝未定。v1.9）")
     sp.add_argument("--item")
     sp.add_argument("--section", help="行き先（今日の予定・今日中・明日以降）")
-    sp.add_argument("--before", help="この項目の直前へ（既定は見出しの末尾）")
+    sp.add_argument("--before", help="この項目の直前へ（既定は見出しの末尾。今日の予定では時刻の順の位置）")
     sp.add_argument("--head", action="store_true", help="見出しの直後（先頭）へ")
+    sp.add_argument("--create-section", action="store_true", help="行き先の見出しが無ければ作る（v1.3。add の --create-section と同じ位置）")
+    sp.add_argument("--due", help="今日の予定・今日中の行を「明日以降」へ動かすときの実施日（YYYY-MM-DD か \"YYYY-MM-DD H:MM\"。明日以後）か none（未定）。"
+                                  "ユーザーに確かめた値を渡す。印と元の実施日は外れ、時刻の欄はこの時刻になる（時刻が無ければ外す。none では変えない）・v1.9")
+    sp = add("close-time", "閉じタグの無い時刻の欄（警告 K15）に閉じタグを補う（v1.10）。欄の時刻の文字の直後に、欄と同じ名前の"
+                           "閉じタグを1つ足すだけで、タスクの文言・状態・位置と行の鍵は変えない。欄が div のとき・閉じタグを足すと数が合わなくなる"
+                           "とき・欄の始まりの直後に時刻の文字が無いとき・時刻の文字の後ろにタグで囲んだ文字があるときは書かずに断る"
+                           "（断った後の扱いは SKILL.md の「ボードの点検」の⑥）")
+    sp.add_argument("--item")
     sp = add("remove", "項目を1行消す。--confirmed が無ければ対象を示すだけで消さない")
     sp.add_argument("--item")
     sp.add_argument("--confirmed", action="store_true")
+    add("deck-snap", "Deck を起動し直す前に呼ぶ（読むだけ・v1.2）。DECK マーカーの間の #deck-key を読み、"
+                     "prev_k_fp（起動ごとのトークンの指紋。#deck-key が無ければ none）と since（いまの時刻）を返す。"
+                     "トークンと表示の鍵は出さない")
+    sp = add("deck-wait", "Deck を起動し直した後に呼ぶ（読むだけ・v1.2）。#deck-key のトークンが deck-snap のときから替わるまで "
+                          "--interval 秒ごとに読み直し、替わったら --url（開いている板の URL）のポートと ?v= と比べて result を返す: "
+                          "same-url（そのままでよい）／open-new-url（新しい URL を開く。--print-url で url も出す）／written（--url なし・ポートの無い URL）／"
+                          "no-key（#deck-key が消えた）。目印が崩れて間を読めないまま --limit 秒たてば board-markers。--limit 秒たっても替わらなければ、watcher.log の --since 以後の行で読み分ける: "
+                          "duplicate（同じボードを見る古い Deck が動いていて、新しい Deck はすぐ終わった。この行が出た時点で返す）／"
+                          "no-port（受信ポートを取れずに動いている）／no-marker（板に書けていない）／"
+                          "collecting（transcript を集めている途中）なら --extra 秒だけ待ち足し、それでも替わらなければ not-written-yet／"
+                          "unknown（「再生成: セッション」の行はあるのに替わらない。その行の最後の1行も log に入れる）／not-started（どの行も無い＝起動できていない）。"
+                          "書けなかった「再生成: 書く直前に」の行は、どの result でも最後の1行を log に入れ、数を skipped_writes に出す（無ければ 0）"
+                          "（log はほかに起動の手がかりの行を最後の 10 行までと、手がかりの文言ごとの最後の1行。「再生成」の行がいくつ続いても押し出されない）。上限で必ず終わる")
+    sp.add_argument("--prev-k-fp", dest="prev_k_fp", help="deck-snap が返した prev_k_fp（16 桁の 16 進か none）")
+    sp.add_argument("--since", help="deck-snap が返した since")
+    sp.add_argument("--url", help="開いている板の URL（ポートと ?v= を比べる。省いたとき・ポートの無い URL では比べずに written を返す）")
+    sp.add_argument("--print-url", action="store_true", help="result が open-new-url・written のとき、新しい URL を出す（表示の鍵が出力に入る）")
+    sp.add_argument("--log", help="watcher.log のパス（既定は board.html と同じフォルダの deck/watcher.log）")
+    sp.add_argument("--interval", default="2", help="読み直す間隔の秒（既定 2）")
+    sp.add_argument("--limit", default="60", help="替わるのを待つ上限の秒（既定 60）")
+    sp.add_argument("--extra", default="60", help="transcript を集めている途中のときに待ち足す秒（既定 60・1回だけ）")
     sp = add("restore", "板を history/ の版（lastgood・before-interrupt・before-tool・before-create）へ丸ごと戻す。--confirmed が無ければ差を示すだけで戻さない")
     sp.add_argument("--from", dest="from_", help="history/<ファイル名>")
     sp.add_argument("--confirmed", action="store_true")
@@ -2034,6 +3328,8 @@ def expand_ops(argv):
             pos.append(str(v))
         elif v is True:
             rest.append("--" + name)
+        elif v is None and name == "due-moved" and obj.get("due") not in (None, "none"):
+            rest.append("--due-moved=none")     # status の due_moved（null＝印なし）をそのまま写した ops も通す
         elif v is False or v is None:
             continue
         else:
@@ -2072,7 +3368,8 @@ def _cleanup_ops_file(path, board_path):
 
 
 ITEM_OPS = {"add": op_add, "set-chip": op_set_chip, "edit": op_edit, "set-crit": op_set_crit,
-            "set-time": op_set_time, "move": op_move, "remove": op_remove}
+            "set-time": op_set_time, "set-due": op_set_due, "move": op_move, "remove": op_remove,
+            "close-time": op_close_time}
 
 
 def main(argv=None):
@@ -2092,6 +3389,12 @@ def main(argv=None):
         board_path = os.path.abspath(os.path.expanduser(a.board or DEFAULT_BOARD))
         if op == "status":
             emit(dict(ok=True, op=op, version=VERSION, **op_status(board_path)))
+            return 0
+        if op == "deck-snap":
+            emit(dict(ok=True, op=op, version=VERSION, board=board_path, **op_deck_snap(board_path)))
+            return 0
+        if op == "deck-wait":
+            emit(dict(ok=True, op=op, version=VERSION, board=board_path, **op_deck_wait(board_path, a)))
             return 0
         if op == "create":
             if a.spec is None and spec_obj is None:

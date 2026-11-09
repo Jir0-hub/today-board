@@ -113,6 +113,7 @@
   .set-note { font-size: .68rem; color: var(--ink-3); margin-top: 8px; line-height: 1.5; }
   #toast-area { position: fixed; right: 14px; bottom: 14px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: 320px; }
   .toast { background: var(--surface); border: 1px solid var(--crit); border-left: 4px solid var(--crit); color: var(--ink); border-radius: 8px; padding: 10px 14px; font-size: .85rem; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.18); cursor: pointer; }
+  .time.time-locked { cursor: not-allowed; }
   .time.overridden::after { content: " ✎"; font-size: .7em; color: var(--hold); }
   .time input { font: inherit; font-size: .8rem; width: 82px; border: 1px solid var(--active); border-radius: 4px; background: var(--surface); color: var(--ink); }
   .hide-btn { float: right; font-size: .72rem; line-height: 1.4; color: var(--ink-3); background: none; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; cursor: pointer; margin-left: 8px; }
@@ -217,4 +218,4 @@
   #tb-board-notice .tb-notice-icon, #tb-board-check .tb-notice-icon { flex: none; font-size: 1.05rem; line-height: 1.5; }
   #tb-board-notice .tb-notice-label, #tb-board-check .tb-notice-label { font-weight: 700; }
   #tb-board-notice .tb-notice-fix, #tb-board-check .tb-notice-fix { display: block; margin-top: 4px; }
-  /* ボードの点検（#tb-board-check）も同じ見た目にする。board.js が読み込み時に1回だけ入れる（2026-10-27） */
+  /* ボードの点検（#tb-board-check）も同じ見た目にする。board.js が読み込み時と、D&D の後・localStorage の移動を当てた後に作り直す（2026-11-05） */

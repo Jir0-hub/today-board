@@ -73,7 +73,7 @@ $removeData = $false
 if ($Data -eq 'Remove') {
     $removeData = $true
 } elseif ($Data -eq 'Ask') {
-    Write-Host '  ボードのデータ（最後に作ったボード・日付の切り替えで残した前の日のボードと、形が崩れる前の版〔history/〕・通知音の設定・表示モード・ボードの保護の記録〔.guard/〕）をどうしますか？'
+    Write-Host '  ボードのデータ（最後に作ったボード・日付の切り替えで残した前の日のボードと、形が崩れる前の版〔history/〕・通知音の設定と ✎ で変えた時刻・表示モード・ボードの保護の記録〔.guard/〕）をどうしますか？'
     Write-Host ("  対象: " + $DataDir)
     $ans = Read-Host '  削除しますか？ [y = 削除 / それ以外 = 残す（既定）]'
     if ($ans -match '^\s*[yY]') { $removeData = $true }

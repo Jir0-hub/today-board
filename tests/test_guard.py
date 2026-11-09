@@ -554,7 +554,7 @@ class TestPost(Sandbox):
         self.assertIn("控えの形式を知らないため", out["reason"])
         self.assertEqual(self.read(), fb)
         self.assertEqual(self.history(), [])
-        self.assertEqual(self.pres(), [self.tuid + ".html"])     # 本文は24時間の掃除に任せる（推奨2）
+        self.assertEqual(self.pres(), [self.tuid + ".html"])     # 本文は24時間の掃除に任せる
 
     def test_corrupt_format(self):
         with open(os.path.join(self.gdir, "format.json"), "w") as f:
@@ -610,7 +610,7 @@ class TestPost(Sandbox):
         return t.replace("<!-- DECK:AUTO:START -->", "<!-- DECK:AUTO:START -->" + chr(10) + "<span>Deck のふだんの書き込み</span>")
 
     def test_deck_region_only_change_is_silent(self):
-        """M1: 指紋も形も控えと同じなら、format.json が読めない・版を知らないときでも何もしない。"""
+        """指紋も形も控えと同じなら、format.json が読めない・版を知らないときでも何もしない。"""
         for case in ("corrupt", "unknown", "snapshot-unknown", "normal"):
             fpath = os.path.join(self.gdir, "format.json")
             with open(fpath, "w") as f:
@@ -852,7 +852,7 @@ class TestRaces(Sandbox):
         out = gd.dispatch(self.d("PostToolUse"))
         self.assertEqual(len(calls), 2)
         self.assertReverted(out, before)
-        self.assertEqual(len(self.history("foreign")), 2)       # 1巡目の退避も残す（推奨1）
+        self.assertEqual(len(self.history("foreign")), 2)       # 1巡目の退避も残す
         self.assertEqual(len(self.records("guard")), 1)
 
     def assertFailedSaved(self, out, before, kind="before-tool"):
@@ -870,7 +870,7 @@ class TestRaces(Sandbox):
         self.assertRestored(before)
 
     def test_failed_replace_saves_snapshot(self):
-        """M2: os.replace を使い切って戻せなかったときも、控えの本文を before-tool へ退避して restore で戻せる。"""
+        """os.replace を使い切って戻せなかったときも、控えの本文を before-tool へ退避して restore で戻せる。"""
         before = self.read()
         gd.dispatch(self.d("PreToolUse"))
         fb = self.foreign()
@@ -891,7 +891,7 @@ class TestRaces(Sandbox):
         self.assertFailedSaved(out, before)
 
     def test_changed_three_times_saves_snapshot(self):
-        """M2: 戻す間に3回続けて板が変わったときも、控えの本文を before-tool へ退避する。"""
+        """戻す間に3回続けて板が変わったときも、控えの本文を before-tool へ退避する。"""
         before = self.read()
         gd.dispatch(self.d("PreToolUse"))
         self.foreign()

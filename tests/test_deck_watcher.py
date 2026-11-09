@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""deck/deck_watcher.py v2.6 以降の試験（T-D：書き込みの記録・読み直しの比較・os.replace の再試行・書けなかった D&D の応答・sound.json の置き場所）。
+"""deck/deck_watcher.py v2.6 以降の試験（T-D：書き込みの記録・読み直しの比較・os.replace の再試行・書けなかった D&D の応答・sound.json の置き場所・ボードの表示〔v2.9〕）。
 
 実行: python -m unittest discover -s tests -v   （リポジトリの直下で）
 すべて一時フォルダで行う。deck_watcher.py は一時フォルダへ写してから読み込む（watcher.log・sound.json を写しの側に出すため）。
@@ -10,13 +10,13 @@
 """
 
 import contextlib
+import http.client
 import importlib.util
 import io
 import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -288,6 +288,10 @@ class TestRecord(DeckSandbox):
 
 # ------------------------------------------------------------------ 読み直しの比較
 
+# 「明日以降」の見出し（設定パネルの説明文にも「明日以降」が入るので、見出しで探す＝2026-11-05）
+LATER_LABEL = '<div class="section-label">明日以降</div>'
+
+
 class TestReread(DeckSandbox):
     def other_writer(self, old, new):
         t = self.text()
@@ -342,7 +346,7 @@ class TestReread(DeckSandbox):
         self.assertTrue(os.path.exists(calls[1][0]))
         t = self.text()
         self.assertIn("作業B改", t)                       # 割り込んだ書き込みを残したうえで
-        self.assertLess(t.index("明日以降"), t.index("朝会"))   # 移動も反映した
+        self.assertLess(t.index(LATER_LABEL), t.index("朝会"))   # 移動も反映した
         recs = self.records("deck")
         self.assertEqual(len(recs), 1)
         self.assertEqual(recs[0][1]["fp"], dw.hand_fingerprint(t))
@@ -359,7 +363,7 @@ class TestReread(DeckSandbox):
         self.assertEqual(n[0], dw.BOARD_REREAD_ATTEMPTS)
         self.assertEqual(self.records("deck"), [])
         self.assertIn("<!-- %d -->" % n[0], self.text())
-        self.assertLess(self.text().index("朝会"), self.text().index("明日以降"))   # 移動は書いていない
+        self.assertLess(self.text().index("朝会"), self.text().index(LATER_LABEL))   # 移動は書いていない
         self.assertIn("%d 回試しても書けませんでした" % dw.BOARD_REREAD_ATTEMPTS, self.logtext())
         self.assertEqual(self.tmp_left(), [])
 
@@ -421,7 +425,7 @@ class TestReplaceRetry(DeckSandbox):
         self.assertEqual(r, (200, "ok"))
         t = self.text()
         self.assertIn("作業A-他の書き手", t)                    # 別の書き手の版が残り
-        self.assertLess(t.index("明日以降"), t.index("朝会"))   # そのうえに移動を当てた
+        self.assertLess(t.index(LATER_LABEL), t.index("朝会"))   # そのうえに移動を当てた
         self.assertEqual(len(self.records("deck")), 1)
         self.assertEqual(self.tmp_left(), [])
 
@@ -501,14 +505,8 @@ class TestReplaceRetry(DeckSandbox):
         token = "t-" + "0123456789" * 3
         server = None
         port = None
+        # 確かめずに受信のソケットそのもので取りにいき、取れなければ次へ（取れたソケットがそのまま押さえになる）
         for cand in range(18737, 18837):
-            s = socket.socket()
-            try:
-                s.bind(("127.0.0.1", cand))
-            except OSError:
-                continue
-            finally:
-                s.close()
             server = dw.start_move_server(self.board, None, port=cand, token=token)
             if server is not None:
                 port = cand
@@ -551,6 +549,284 @@ class TestReplaceRetry(DeckSandbox):
             server.server_close()
 
 
+# ------------------------------------------------------------------ ボードの表示（v2.9）
+
+VIEW_KEY = "v" * 43
+VIEW_TOKEN = "t-" + "0123456789" * 3
+
+
+class TestBoardView(DeckSandbox):
+    """受信ポートから板を配る（v2.9）。配るのは許可した5経路だけ・board.html は表示の鍵が要る・Origin の付いた要求には配らない・
+    Host の照合・枠への埋め込みの禁止。配った板（Deck と同じオリジン）からの読み書きが通り、ほかのオリジンからは通らない。
+    受信は 18737 以降の臨時のポートだけを使う。"""
+
+    def setUp(self):
+        super().setUp()
+        root_assets = os.path.join(ROOT, "skill", "assets")
+        for f in ("board.css", "board.js", "cat.png"):
+            shutil.copy2(os.path.join(root_assets, f), self.dir)
+        for f in ("state.json", "secret.txt"):
+            with open(os.path.join(self.dir, f), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+        self.sound = os.path.join(self.dir, "sound.json")
+        self._servers = []
+        self.server, self.port = self.start(VIEW_KEY)
+
+    def tearDown(self):
+        for srv in self._servers:
+            srv.shutdown()
+            srv.server_close()
+        super().tearDown()
+
+    def start(self, view_key):
+        # 確かめずに受信のソケットそのもので取りにいき、取れなければ次へ（取れたソケットがそのまま押さえになる）
+        for cand in range(18737, 18837):
+            server = dw.start_move_server(self.board, dw.SoundStore(self.sound), port=cand, token=VIEW_TOKEN,
+                                          view_key=view_key)
+            if server is not None:
+                self._servers.append(server)
+                return server, cand
+        self.fail("臨時のポートを取れない")
+
+    def req(self, method, target, headers=None, body=None, port=None):
+        """生の要求を送る（要求先の文字列をそのまま送れるよう http.client を使う）。"""
+        port = self.port if port is None else port
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            h = {"Host": "127.0.0.1:%d" % port}
+            h.update(headers or {})
+            conn.putrequest(method, target, skip_host=True, skip_accept_encoding=True)
+            for k, v in h.items():
+                conn.putheader(k, v)
+            if body is not None:
+                conn.putheader("Content-Length", str(len(body)))
+            conn.endheaders(body)
+            res = conn.getresponse()
+            return res.status, {k.lower(): v for k, v in res.getheaders()}, res.read()
+        finally:
+            conn.close()
+
+    def own(self):
+        return "http://127.0.0.1:%d" % self.port
+
+    def api(self, path, claim=None, origin=None, method="GET", body=None, k=VIEW_TOKEN):
+        claim = self.own() + "/" if claim is None else claim
+        q = "?board=" + urllib.parse.quote(claim, safe="")
+        if k is not None:
+            q += "&k=" + k
+        headers = {"Origin": origin} if origin is not None else {}
+        return self.req(method, path + q, headers, body)
+
+    def file_bytes(self, name):
+        with open(os.path.join(self.dir, name), "rb") as f:
+            return f.read()
+
+    # ---- 配る
+    def test_serves_board_with_view_key(self):
+        for target in ("/?v=" + VIEW_KEY, "/board.html?v=" + VIEW_KEY):
+            code, h, body = self.req("GET", target)
+            self.assertEqual(code, 200, target)
+            self.assertEqual(body, self.read())
+            self.assertEqual(h["content-type"], "text/html; charset=utf-8")
+            self.assertEqual(h["cache-control"], "no-store")
+            self.assertEqual(h["x-frame-options"], "DENY")
+            self.assertEqual(h["content-security-policy"], "frame-ancestors 'none'")
+            self.assertEqual(h["cross-origin-resource-policy"], "same-origin")
+            self.assertEqual(h["x-content-type-options"], "nosniff")
+            self.assertEqual(h["referrer-policy"], "no-referrer")
+            self.assertNotIn("access-control-allow-origin", h)
+
+    def test_serves_board_with_other_name(self):
+        """--board で別の名前の板を指しても、/ はその板を配る（同じフォルダの board.html ではない）。"""
+        other = os.path.join(self.dir, "b2.html")
+        with open(other, "wb") as f:
+            f.write(b"<!doctype html><title>b2</title>")
+        with open(os.path.join(self.dir, "board.html"), "ab") as f:
+            f.write(b"<!-- not this -->")
+        self.board = other
+        _srv, port = self.start(VIEW_KEY)
+        code, _h, body = self.req("GET", "/?v=" + VIEW_KEY, port=port)
+        self.assertEqual((code, body), (200, b"<!doctype html><title>b2</title>"))
+
+    def test_serves_assets_without_key(self):
+        for name, ctype in (("board.css", "text/css; charset=utf-8"), ("board.js", "text/javascript; charset=utf-8"),
+                            ("cat.png", "image/png")):
+            code, h, body = self.req("GET", "/" + name)
+            self.assertEqual(code, 200, name)
+            self.assertEqual(body, self.file_bytes(name))
+            self.assertEqual(h["content-type"], ctype)
+            self.assertNotIn("access-control-allow-origin", h)
+            self.assertEqual(h["cross-origin-resource-policy"], "same-origin")
+
+    def test_board_needs_right_view_key(self):
+        for target, reason in (("/", "view key required"), ("/board.html", "view key required"),
+                               ("/?v=" + "w" * 43, "view key mismatch"), ("/?v=", "view key required")):
+            code, h, body = self.req("GET", target)
+            self.assertEqual(code, 403, target)
+            self.assertIn(reason.encode("utf-8"), body)
+            self.assertNotIn(VIEW_TOKEN.encode("utf-8"), body)
+            self.assertNotIn("access-control-allow-origin", h)
+
+    def test_no_view_key_means_no_board(self):
+        _srv, port = self.start(None)
+        code, _h, body = self.req("GET", "/?v=" + VIEW_KEY, port=port)
+        self.assertEqual(code, 403)
+        self.assertIn(b"view unavailable", body)
+        self.assertEqual(self.req("GET", "/board.css", port=port)[0], 200)
+
+    def test_only_listed_paths(self):
+        for target in ("/state.json", "/sound.json", "/secret.txt", "/watcher.log", "/BOARD.HTML?v=" + VIEW_KEY,
+                       "/board.html/?v=" + VIEW_KEY, "/..%2fsecret.txt", "/%2e%2e/secret.txt", "/../secret.txt",
+                       "//evil.example/board.html?v=" + VIEW_KEY, "//evil.example/?v=" + VIEW_KEY,
+                       "/board.js/../secret.txt", "/assets/board.js", "/favicon.ico", "/%62oard.js",
+                       # 絶対形の要求先（urlsplit は経路だけを取り出す。要求先そのままの照合で断る）
+                       "http://127.0.0.1:%d/?v=%s" % (self.port, VIEW_KEY),
+                       "http://127.0.0.1:%d/board.html?v=%s" % (self.port, VIEW_KEY),
+                       "http://evil.example/board.js"):
+            code, _h, body = self.req("GET", target)
+            self.assertEqual(code, 404, target)
+            self.assertNotIn(b"<!DOCTYPE", body.upper())
+
+    def test_missing_board_is_404(self):
+        os.remove(self.board)
+        self.assertEqual(self.req("GET", "/?v=" + VIEW_KEY)[0], 404)
+
+    def test_origin_header_is_refused_for_view(self):
+        for origin in ("null", self.own(), "https://evil.example", "http://127.0.0.1:%d" % (self.port + 1)):
+            for target in ("/?v=" + VIEW_KEY, "/board.js", "/cat.png"):
+                code, _h, body = self.req("GET", target, {"Origin": origin})
+                self.assertEqual(code, 403, (origin, target))
+                self.assertIn(b"origin not allowed", body)
+                self.assertNotIn(b"<html", body.lower())
+
+    def test_host_is_checked_for_view(self):
+        for host in ("evil.example:%d" % self.port, "127.0.0.1:%d" % (self.port + 1), "127.0.0.1",
+                     "[::1]:%d" % self.port, "localhost"):
+            code, _h, body = self.req("GET", "/?v=" + VIEW_KEY, {"Host": host})
+            self.assertEqual(code, 403, host)
+            self.assertIn(b"host not allowed", body)
+
+    def test_localhost_is_moved_to_127(self):
+        code, h, body = self.req("GET", "/?v=" + VIEW_KEY, {"Host": "localhost:%d" % self.port})
+        self.assertEqual(code, 308)
+        self.assertEqual(h["location"], self.own() + "/?v=" + VIEW_KEY)
+        self.assertEqual(body, b"")
+        # Origin が付いていれば移さずに断る（Host が外れる）
+        code, _h, _b = self.req("GET", "/", {"Host": "localhost:%d" % self.port, "Origin": "null"})
+        self.assertEqual(code, 403)
+        # 読み書きの経路は移さない（localhost は従来どおり断る）
+        code, _h, _b = self.req("GET", "/ping", {"Host": "localhost:%d" % self.port})
+        self.assertEqual(code, 403)
+
+    def test_view_key_not_logged(self):
+        self.req("GET", "/?v=" + VIEW_KEY)
+        self.req("GET", "/?v=" + "w" * 43)
+        self.assertNotIn(VIEW_KEY, self.logtext())
+        self.assertNotIn("w" * 43, self.logtext())
+
+    # ---- 配った板からの読み書き
+    def test_api_from_served_board(self):
+        code, _h, body = self.api("/notifications")                       # 同じオリジンの GET（Origin なし）
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body.decode("utf-8"))["deck"], "today-board")
+        code, _h, _b = self.api("/sound/config", claim=self.own() + "/board.html")
+        self.assertEqual(code, 200)
+        data = json.dumps({"enabled": True, "type": "bell", "test": False}).encode("utf-8")
+        code, _h, body = self.api("/sound/config", origin=self.own(), method="POST", body=data)
+        self.assertEqual(code, 200, body)
+        with open(self.sound, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual((saved.get("enabled"), saved.get("type")), (True, "bell"))
+
+    def test_move_from_served_board(self):
+        body = json.dumps({"k": "9:00|朝会", "sec": "明日以降", "before": None, "head": True}).encode("utf-8")
+        code, _h, res = self.api("/board/move", origin=self.own(), method="POST", body=body)
+        self.assertEqual(code, 200, res)
+        text = self.text()
+        self.assertGreater(text.index("朝会"), text.index('<div class="section-label">明日以降</div>'))
+
+    def test_api_refuses_other_origins_and_claims(self):
+        data = json.dumps({"enabled": True, "type": "bell", "test": False}).encode("utf-8")
+        self.assertFalse(os.path.exists(self.sound))
+        cases = [
+            (dict(origin="http://127.0.0.1:%d" % (self.port + 1)), "origin not allowed"),
+            (dict(origin="http://localhost:%d" % self.port), "origin not allowed"),
+            (dict(origin="https://evil.example"), "origin not allowed"),
+            (dict(origin=self.own(), k=None), "token required"),
+            (dict(origin=self.own(), k="x" * 43), "token mismatch"),
+            (dict(origin=self.own(), claim="http://127.0.0.1:%d/" % (self.port + 1)), "board unreadable"),
+            (dict(origin=self.own(), claim=self.own() + "/other.html"), "board unreadable"),
+            (dict(origin=self.own(), claim="https://127.0.0.1:%d/" % self.port), "board unreadable"),
+            (dict(origin="null"), "board unreadable"),            # Origin: null のページは配った板を名乗れない
+        ]
+        for kw, reason in cases:
+            code, _h, body = self.api("/sound/config", method="POST", body=data, **kw)
+            self.assertEqual(code, 403, (kw, body))
+            self.assertEqual(json.loads(body.decode("utf-8"))["error"], reason, kw)
+        self.assertFalse(os.path.exists(self.sound))       # 断った要求は sound.json を作らない
+
+    def test_file_board_still_works(self):
+        claim = "file:" + urllib.request.pathname2url(self.board)
+        code, h, _b = self.api("/notifications", claim=claim, origin="null")
+        self.assertEqual(code, 200)
+        self.assertEqual(h.get("access-control-allow-origin"), "null")
+
+    def test_ping_from_served_board(self):
+        code, _h, body = self.req("GET", "/ping")
+        self.assertEqual((code, body), (200, b"deck-board-mover"))
+
+    def test_ping_proof_needs_key_and_binds_port(self):
+        n = "a1" * 16
+        code, _h, body = self.req("GET", "/ping?n=" + n)
+        self.assertEqual(code, 200)
+        self.assertEqual(body.decode("ascii"), "deck-board-mover " + dw.ping_proof(VIEW_KEY, self.port, n))
+        self.assertNotEqual(body.decode("ascii"), "deck-board-mover " + dw.ping_proof(VIEW_KEY, self.port + 1, n))
+        self.assertNotIn(VIEW_KEY.encode("ascii"), body)
+        # 形の違う乱数・鍵の無い Deck には証しを付けない
+        for bad in ("short", "x" * 129, "a/b" * 8, "a" * 16 + "\n"):
+            self.assertEqual(self.req("GET", "/ping?n=" + urllib.parse.quote(bad, safe=""))[2], b"deck-board-mover")
+        _srv, port = self.start(None)
+        self.assertEqual(self.req("GET", "/ping?n=" + n, port=port)[2], b"deck-board-mover")
+
+
+class TestViewKey(unittest.TestCase):
+    def test_made_once_and_kept(self):
+        st = {"v": 4, "files": {}}
+        k = dw.board_view_key(st)
+        self.assertRegex(k, r"^[A-Za-z0-9_-]{43}$")
+        self.assertEqual(st["view_key"], k)
+        self.assertEqual(dw.board_view_key(st), k)
+
+    def test_other_port_replaces(self):
+        st = {}
+        k1 = dw.board_view_key(st, 8737)
+        self.assertEqual(dw.board_view_key(st, 8737), k1)
+        k2 = dw.board_view_key(st, 8738)
+        self.assertNotEqual(k2, k1)
+        self.assertEqual(st["view_key_port"], 8738)
+        self.assertEqual(dw.board_view_key(st), k2)          # ポートを渡さなければ替えない
+
+    def test_ping_proof(self):
+        import hashlib as _h
+        import hmac as _m
+        want = _m.new(b"k" * 43, b"today-board-ping:8737:" + b"n" * 32, _h.sha256).hexdigest()
+        self.assertEqual(dw.ping_proof("k" * 43, 8737, "n" * 32), want)
+        self.assertNotEqual(dw.ping_proof("k" * 43, 8738, "n" * 32), want)
+
+    def test_bad_value_is_replaced(self):
+        for bad in ("", "short", 12, None, "a" * 42 + "!", "a" * 44, "a" * 43 + "\n"):
+            st = {"view_key": bad}
+            k = dw.board_view_key(st)
+            self.assertRegex(k, r"^[A-Za-z0-9_-]{43}$")
+            self.assertNotEqual(k, bad)
+
+    def test_deck_key_element(self):
+        self.assertEqual(dw.deck_key_element(8737, "tok"), '<span id="deck-key" hidden data-port="8737" data-k="tok"></span>')
+        self.assertEqual(dw.deck_key_element(8737, "tok", "vk"),
+                         '<span id="deck-key" hidden data-port="8737" data-k="tok" data-view="vk"></span>')
+        self.assertTrue(dw._DECK_SPAN_LINE_RE.fullmatch(dw.deck_key_element(8737, "tok", "vk")))
+
+
 # ------------------------------------------------------------------ sound.json の置き場所（v2.7）
 
 class TestSoundStatePlace(DeckSandbox):
@@ -560,14 +836,27 @@ class TestSoundStatePlace(DeckSandbox):
     def run_main(self, default_board, argv):
         seen = {}
 
-        def fake_server(board_path, sound_store=None, port=None, token=None):
+        fake_port = getattr(self, "fake_port", None)
+
+        class FakeServer:
+            server_address = ("127.0.0.1", fake_port)
+            RequestHandlerClass = type("H", (), {"view_key": None})
+
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        def fake_server(board_path, sound_store=None, port=None, token=None, view_key=None):
             seen["path"] = sound_store._path
-            return None
+            seen["server"] = FakeServer() if fake_port is not None else None
+            return seen["server"]
 
         saved = (dw.DEFAULT_BOARD_PATH, dw.SOUND_STATE_PATH,
                  dw.start_move_server, dw.watch_loop, dw.acquire_single_instance_lock)
         prod_sound = os.path.join(self.dir, "prod", "deck", "sound.json")
-        os.makedirs(os.path.dirname(prod_sound))
+        os.makedirs(os.path.dirname(prod_sound), exist_ok=True)
         dw.DEFAULT_BOARD_PATH = default_board
         dw.SOUND_STATE_PATH = prod_sound
         dw.start_move_server = fake_server
@@ -578,6 +867,9 @@ class TestSoundStatePlace(DeckSandbox):
         finally:
             (dw.DEFAULT_BOARD_PATH, dw.SOUND_STATE_PATH,
              dw.start_move_server, dw.watch_loop, dw.acquire_single_instance_lock) = saved
+        self.seen = seen
+        srv = seen.get("server")
+        seen["view_key"] = srv.RequestHandlerClass.view_key if srv is not None else None
         return seen["path"], prod_sound
 
     def common(self):
@@ -595,6 +887,29 @@ class TestSoundStatePlace(DeckSandbox):
     def test_explicit_default_board_stays_in_script_folder(self):
         path, prod = self.run_main(self.board, ["--board", self.board] + self.common())
         self.assertEqual(path, prod)
+
+    def test_view_key_is_kept_in_state_and_reused(self):
+        """表示の鍵（v2.9）は state.json に置かれ、同じポートで起動し直せば同じものが受信の処理へ渡る。
+        違うポートで受信したら替わる。受信サーバが無ければ作らない。"""
+        st = os.path.join(self.dir, "st.json")
+        self.fake_port = 18801
+        self.run_main(self.board, self.common())
+        first = self.seen["view_key"]
+        self.assertRegex(first, r"^[A-Za-z0-9_-]{43}$")
+        with open(st, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual((saved.get("view_key"), saved.get("view_key_port")), (first, 18801))
+        self.run_main(self.board, self.common())
+        self.assertEqual(self.seen["view_key"], first)
+        self.fake_port = 18802
+        self.run_main(self.board, self.common())
+        second = self.seen["view_key"]
+        self.assertRegex(second, r"^[A-Za-z0-9_-]{43}$")
+        self.assertNotEqual(second, first)
+        with open(st, encoding="utf-8") as f:
+            self.assertEqual(json.load(f).get("view_key_port"), 18802)
+        self.assertNotIn(first, self.logtext())          # 鍵はログに書かない
+        self.assertNotIn(second, self.logtext())
 
 
 # ------------------------------------------------------------------ 同時書き込み（別フォルダの Deck の写し）

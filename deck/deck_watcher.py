@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Deck v2.7 — Claude Code 全セッション常駐ウォッチャー。
+"""Deck v2.15 — Claude Code 全セッション常駐ウォッチャー。
 
 ~/.claude/projects/<エンコード済みパス>/<session-id>.jsonl（セッション transcript）を
 監視し、today-board の board.html 内
@@ -9,11 +9,12 @@
 ユーザーが board.js の D&D で行ったタスク移動の反映（v1.6・下記受信サーバ経由）、
 手書きセクションの完了表示（done-item / strike）を状態チップに合わせて揃える整合
 （v1.8・class 属性のトークンだけを足し引きし、テキスト・順序・チップは変えない）、
-日付の切り替えで作る今日のボード（v2.2）、ヘッダの値（進捗・<title> の日付・#upd-time）を
+日付の切り替えで作る今日のボード（v2.2。実施日が来た「明日以降」の行を今日の側へ移すことを含む・v2.8）、ヘッダの値（進捗・<title> の日付・#upd-time）を
 計算し直すこと（v2.2）、欠けた DECK マーカーを足すこと（マーカーが2つとも無いときだけ。Deck が書いた部分が
 空行だけを挟んでひと続きに残っていればそれを囲み、間に別の行があれば足さない〔v2.5〕。Deck が書いた部分が1つも無ければ、
 <footer> がちょうど1つのときにその直前へ足す〔v2.2〕）、引き継いだボードの印（<div class="board"> の data-tb-rolled / data-tb-rolled-fp）を
-手書き部分が Deck 以外の書き手で変わったときに外すこと、印の無い板に残った data-tb-rolled-fp を外すこと、
+手書き部分が Deck 以外の書き手で変わったときに外すこと（切り替えた件数 data-tb-rolled-carried / data-tb-rolled-due も一緒に・v2.12）、
+印の無い板に残った data-tb-rolled-fp（と件数）を外すこと、
 D&D の反映で data-tb-rolled-fp を書き直すこと（v2.3）。
 タスクの文言は書き換えない。以上は board.html の中の話で、board.html の外では deck/ の state.json・sound.json（--board で既定以外のボードを
 指したときはボードと同じフォルダ・v2.7）・watcher.log のほか、board.html と同じフォルダの history/（日付の切り替えで退避した元のボードと、形が崩れる前の版・v2.4）・
@@ -35,8 +36,8 @@ v1.7: 時刻トリガーの通知音を Deck 側に移した。ブラウザは�
 タスクを 5 秒ごとに判定し（board.html を読み直すのは変化したときだけ）、予定時刻に達した未完了タスクを
 winsound で鳴らす。
 設定 UI は board.js の⚙パネルのままで、値と試聴要求は POST /sound/config で受ける。
-✎ による時刻の手動変更（board.js の localStorage にしかない）は POST /board/times で
-中継してもらい、上書きがあればその時刻で発火判定する。
+✎ による時刻の手動変更は POST /board/times で受け、上書きがあればその時刻で発火判定する
+（持ち主は Deck だけ。board.js は GET /board/times で読んで表示し、✎ を操作したときだけ送る＝2026-11-02 以後の board.js）。
 
 v1.8: 手書きセクションの完了表示を HTML 正本ごと整合させる（normalize_done_marks）。
 board.js の自動整合は表示層（DOM）だけなので、正本には「済チップはあるのに done-item が
@@ -125,8 +126,81 @@ v2.7: --board で既定以外のボードを指した Deck は、sound.json を�
   スクリプトと同じフォルダのものを使ったので、本番の deck/ の deck_watcher.py を試験用のボードに向けると、試験用のボードで開いた
   ページの設定が本番の sound.json に書かれた。既定のボードを見る Deck の動きは変わらない。
 
+v2.8: 実施日（「明日以降」の行の data-due）が今日以前の行を、日付の切り替えで今日の側へ移す（2026-11-02）。実施日が今日で
+  時刻があれば「今日の予定」の時系列の位置へ（時刻の要素を付け、通知の対象になる）、それ以外は「今日中」の先頭へ
+  （前の日の時刻を今日の時刻にしない）。未チップを付けるので進捗の分母に入る。data-due-moved="<移した日>" を付け、利用者が
+  「明日以降」へ戻した行は移し直さない（v2.13 からは、戻すときに実施日を決め直して印は外れる）。済の行と、読めない実施日の行は動かさない。D&D で実施日の来た行を今日の側へ動かしたときも同じ印を付ける。
+  「明日以降」の行は通知の対象から除く（read_board_alarms。時刻の欄が残っていても、今日のその時刻に鳴らさない）。
+
+v2.9: 受信ポートから板そのものを配る（2026-11-04 ユーザー決定）。Claude デスクトップアプリの内蔵ブラウザは file:// の
+  ページを開けず、board.html を開くとファイルのプレビューになって board.css・board.js・cat.png が読み込まれない。
+  そこで GET /（と /board.html）で board_path を、/board.css・/board.js・/cat.png で board.html と同じフォルダの
+  ものを配る（この5つの経路だけ。要求のパスからファイル名を組み立てない）。board.html は ?v=<表示の鍵> が
+  合うときだけ配る（鍵は state.json の view_key。接続情報の span に data-view として書く）。配った板は Deck と
+  同じオリジン（http://127.0.0.1:<ポート>）になり、そこからの読み書きの要求を通すため、Origin の検査で
+  "null" に加えて Deck 自身のオリジンを許し、申告 http://127.0.0.1:<ポート>/ を自分の板として受ける。
+  配る応答は Origin の付いた要求には返さず、CORS の許可を付けず、枠への埋め込みとほかのオリジンからの読み込みを
+  禁じる（理由は「受信の照合」節）。file:// で開く使い方は変わらない。鍵は同じポートで受信する限り起動をまたいで使い、
+  前回と違うポートで受信したら替える。GET /ping?n=<乱数> には鍵とポートと乱数の HMAC を添え、配った板はそれを確かめてから
+  読み直す（Deck が止まっている間に同じポートを取った別のプログラムへ、読み直しで鍵を送らないため）。
+
+v2.10: D&D の反映（POST /board/move）で、実施日の来た「明日以降」の行を今日の側へ動かすとき、日付の切り替え・board_edit.py の
+  move と同じ形にする（2026-11-04）。v2.9 までは一度移した印を付けるだけで、時刻の欄を持つ前の日の行を今日の予定・今日中へ動かすと
+  その時刻に鳴り、実施日が今日で時刻のある行を今日の予定へ動かしても時刻の欄が付かず鳴らなかった。形は _due_moved_shape
+  （日付の切り替えの _move_due_block と board_edit.py の move も同じ関数を使う。board_edit.py の側は写し）。位置は落とした位置のまま。
+
+v2.11: 「明日以降」の行の時刻を1つにする（2026-11-05 ユーザー決定「その形で進める」）。D&D の反映で、実施日のある行は、一度移した印の
+  有無・実施日が先の日かによらず同じ形（_due_moved_shape）にする（v2.10 までは、印のある行と実施日の前の行は形を変えず、時刻の欄を
+  持つ前の日の行がその時刻に鳴り、「未」も付かなかった）。印は日付の切り替えが移し直さないための印で、切り替えの判定
+  （_item_due_pending）は印を見たまま。先の日の行には印を付けない（「明日以降」へ戻せば、その日に移す）。行の時刻は、時刻の欄が
+  H:MM ならその時刻、無ければ実施日の時刻とし（board_edit.py v1.7 は時刻の欄を書くと実施日の時刻も同じ値にするので、ふつうは同じ）、
+  違う行（v1.6 までにできた行）では時刻の欄を使う（ユーザー決定。どちらが後から書かれたかは板からは分からない）。H:MM の範囲外（25:00 など）の
+  時刻の欄は使わない（_valid_hm）。日付の切り替えで移す行も同じ。
+  今日の側へ移した行の実施日は今日にする（時刻の欄を付けるならその時刻を含め、付けないなら日付だけ。2026-11-05 ユーザー決定「その形で
+  進める」。v2.10 までは前の日の実施日のまま残っていた）。元の実施日は新しい属性 data-due-from に残し（既にあれば変えない）、board.js が
+  「↪ 11/4 22:05 の予定から」と出す。実施日の前の行は実施日の日付を変えない。日付の切り替えで今日の側から引き継ぐ行も、実施日が今日より
+  前なら今日にする（_carry_due_today。v2.10 までに移した行もここで直る）。
+v2.12: 引き継ぎのチップの時刻と「引き継いだボード」の件数を、引き継いだときの事実に合わせる。data-orig-time は data-carried-from と
+  組にし（引き継いだ日のボードでその行が持っていた時刻）、日付の切り替えが data-carried-from を新しく付けるときだけ書く。そのとき前から
+  残る data-orig-time（D&D・move が時刻の欄を外したときに残した、実施日の時刻）は外す（v2.11 までは残し、先の日の行を前もって今日の側へ
+  動かした翌日に「↪ 11/5 9:00 の予定から」と、11/7 の 9:00 を 11/5 の時刻として出した）。data-carried-from が既にある行（重ねて切り替えた行）は
+  どちらも変えない（最初の値を保つ。v2.11 までは data-orig-time が無ければ後の日の時刻を足し、最初の日付と組んで出した）。
+  切り替えた件数を <div class="board"> の data-tb-rolled-carried（引き継いだ行）・data-tb-rolled-due（「明日以降」から移した行）に持たせ、
+  board.js が「引き継いだボード」の知らせにその数を出す（v2.11 までは board.js が行の印を数えたので、add・create が印を足した行や
+  data-carried-from の残ったまま「明日以降」から移した行で数がずれた）。data-tb-rolled と一緒に外す。
+v2.13: 先の日の行を前もって今日の側へ動かすと、今日の行として扱う（2026-11-06 ユーザー決定）。D&D の反映（_due_moved_shape）で、
+  実施日が先の日の行も実施日を今日にし（時刻は付けない＝前の日の行と同じく時刻の欄を外して flat）、元の予定を data-due-from に残し
+  （日付は元の実施日の日付、時刻は行の時刻）、一度移した印を付ける（今日の行になったので、他の今日の側の行と同じ。「明日以降」へ
+  戻すときは実施日を決め直し、印は外れる＝下の _later_due_shape）。v2.12 までは日付も印も変えず、行は時刻の無いまま今日の側に残り、実施日の日が来ても鳴らなかった。日付の切り替えで
+  今日の側から引き継ぐ行も、実施日が先の日なら今日にする（_carry_due_today。v2.12 までに前もって動かした行もここで直る）。
+  今日の側の行を D&D で「明日以降」へ落とすと、board.js が実施日（日付・時刻は任意）か未定を利用者に聞いて "due" で送り、
+  Deck はその値を当てる（_later_due_shape。印と元の実施日を外し、時刻の欄はその時刻にするか、時刻が無ければ外す。2026-11-06
+  ユーザー決定）。"due" の無い要求（v2.12 と同時の board.js）は従来どおり形を変えない。
+v2.14: 行の鍵（_item_key＝D&D の k・✎ の上書き・通知の鍵）の時刻の部分を、時刻の欄そのものの文字にする（_key_text。2026-11-06
+  ユーザー決定「鍵の作り方を1か所にまとめる」）。欄の開きタグの後から、欄と同じ名前の最初の閉じタグか、class を持つ最初の開きタグの
+  手前までを読み、前後の空白を除く（改行は CR LF・CR を LF にそろえる＝ブラウザの読み方）。閉じタグの無い時刻の欄（<span class="time">0:00<div>…）は、
+  v2.13 までは最初の </span> までの文字（タイトルやチップの文字を含む）を鍵にしたため、その後ろに文字がある行（補足・span のタイトル・
+  2つ目のチップ）では board.js の鍵と合わず、D&D が保存されなかった。今は「0:00|タイトル」になり、閉じタグを補っても鍵は変わらない。
+  board.js は同じ規則を DOM に当て（tbKeyText）、board_edit.py は同じ関数を写して持つ。閉じタグのある行の鍵は、欄の中に class を
+  持つ要素がある形・欄の文字の後ろに空白か改行がある形・タイトルの文字に CR の改行がある形でなければ変わらない。
+  日付の切り替えで今日の予定の時刻付きの未完了の行を引き継ぐとき、時刻の欄が閉じていなければ、閉じタグを補ってから外す（_time_close_at。
+  board_edit.py の close-time と同じ形だけ）。v2.13 までは欄の終わりが決まらず、その板の切り替えが止まった（「作れませんでした」）。
+  時刻の欄を外すとき（_remove_time_elements。日付の切り替え・D&D の形作り・board_edit.py の move・set-time --time none）、欄の中に
+  タイトル・補足・チップの箱・チップ・項目（_ROW_PART_RE）があれば外さない＝その行の形は作らない。日付の切り替えは、今日の予定の行なら
+  止め（板は前の日のまま）、実施日の来た「明日以降」の行ならその場に残す（board_edit.py の K13 がその行を名指す）。D&D は今日の側への移動に
+  印だけを付け、「明日以降」へ実施日を当てる移動は 400（閉じタグが項目の終わりに置かれた形では、v2.13 までは外してタイトル・補足・チップを消した）。
+v2.15: 時刻の欄の時刻を読む所（日付の切り替えの data-orig-time と今日の予定の並び・D&D の形作り〔_due_moved_shape・_carry_due_today〕）を、
+  すべて行の鍵の時刻と同じ読み方にする（_time_text＝_key_text の stop_at_class。board.js の tbTimeText と同じ）。
+  v2.14 までは _element_text で最初の同じ名前の閉じタグまで読んだので、閉じタグの無い欄（<span class="time">0:00</div><div class="chips">…）では
+  後ろのチップの「未」まで時刻の文字に入り、H:MM として読めずに実施日の時刻を使った（画面は「0:00」を使い、D&D の後の時刻が分かれた）。
+  欄の中に部品でない class の子がある欄（9:00<span class="x">a</span>）の data-orig-time も「9:00a」から「9:00」になる。
+  欄の範囲は _time_range にまとめ（_remove_time_elements と _key_text が使う）、ブラウザに近づけた: 中でも外側でも開いていない閉じタグ（</b> など）は
+  読み飛ばし、p の欄は後ろの p を閉じる要素（div・li など）の手前で閉じる（v2.14 はそこで閉じた・p の中にタイトルまで含めた）。
+  行の鍵の時刻の部分もこの範囲で読むので、範囲の外に文字がある形（<p class="time">9:00<div>x</div></p> の「x」、閉じタグの無い
+  <span class="time">0:00</div>tail <span>y</span> の「tail y」）では鍵が変わり、v2.15 で初めて board.js の鍵（DOM の欄）と合う（D&D・✎・通知が効く）。
+
 制約: Python 標準ライブラリのみ・単一ファイル・外部ネットワーク通信なし
-（127.0.0.1 限定の受信ポート 1 つのみ。8737〜8746 のうち空いている 1 つ・v2.1）・
+（127.0.0.1 限定の受信ポート 1 つのみ。8737〜8746 のうち空いている 1 つ・v2.1。ボードの表示もこのポート・v2.9）・
 projects/ は読み取り専用。
 
 使い方:
@@ -198,6 +272,20 @@ BOARD_MOVE_PORT = 8737          # 受信ポートの先頭（127.0.0.1 限定・
 BOARD_PORT_COUNT = 10           # 8737〜8746 のうち空いている最初の 1 つで受信する（v2.1）。
                                 # board.js は board.html の接続情報（data-port）でポートを知る
 REJECT_LOG_SEC = 60             # 別ボードからの要求を断った記録は、この間隔に 1 行へまとめる
+# ボードの表示（v2.9）: 受信ポートから板そのものを配る。配るのはこの表の経路だけで、ファイルは board.html と
+# 同じフォルダから読む（"board.html" は board_path そのもの。--board で別の名前の板を指しても同じ）。
+# 経路はこの表で引くだけで、要求のパスからファイル名を組み立てない（../ などで別のファイルへ行けない）。
+BOARD_VIEW_FILES = {
+    "/": ("board.html", "text/html; charset=utf-8"),
+    "/board.html": ("board.html", "text/html; charset=utf-8"),
+    "/board.css": ("board.css", "text/css; charset=utf-8"),
+    "/board.js": ("board.js", "text/javascript; charset=utf-8"),
+    "/cat.png": ("cat.png", "image/png"),
+}
+BOARD_VIEW_CLAIM_PATHS = ("/", "/board.html")   # 配った板の申告として受けるパス（?board=http://127.0.0.1:<ポート>/…）
+BOARD_VIEW_MAX_BYTES = 16 * 1024 * 1024         # 配るファイルの大きさの上限（これを超えたら配らない）
+BOARD_VIEW_READ_RETRIES = 3                     # 読めなかった（置き換えの最中など）ときに読み直す回数
+BOARD_VIEW_READ_RETRY_SEC = 0.05
 MOVABLE_SECTIONS = ("今日の予定", "今日中", "明日以降")  # D&D 移動の対象セクション
 
 # 通知音（v1.7）: 設定と発火済み記録の保存先。ブラウザの localStorage は読めないため
@@ -1969,6 +2057,7 @@ def inject(board_path, html_block):
 # board.js はドロップ時に POST http://127.0.0.1:<見つけたポート>/board/move?board=<ボードの URL> へ
 # （ポートと ?board= は v2.1。「受信の照合」節）
 # {"k": "<key>", "sec": "今日の予定|今日中|明日以降", "before": "<key>|null", "head": true}
+# 今日の側から「明日以降」へ落とした行では "due": "YYYY-MM-DD[ H:MM]"（利用者が決めた実施日）か null（未定）も送る（v2.13）
 # を送る（200 なら localStorage 保存をスキップ＝ファイルが正）。
 # key の定義は board.js の key() と完全一致させる:
 #   (time要素の textContent（無ければ ''）+ '|' + task-title要素の textContent).trim()
@@ -2108,11 +2197,93 @@ def _element_text(block, cls_token):
     return None
 
 
+# 行の鍵の時刻の部分は、class を持つ開きタグの手前で読み終える（v2.14 / board_edit.py v1.10。下の _key_text）
+_KEY_STOP_RE = re.compile(r'<\w+\b[^>]*?\sclass\s*=', re.I)
+
+
+def _key_text(block, cls_token, stop_at_class=False):
+    """行の鍵に使う、class トークンに cls_token を持つ最初の要素の文字（v2.14 / board_edit.py v1.10 で新設。欄の範囲〔_time_range〕で読み終えるのは v2.15 / board_edit.py v1.11）。無ければ None。
+
+    鍵の作り方の正本。board.js の tbKeyText が同じ規則を DOM に当て、board_edit.py は写しを持つ（試験 T-P が一致を見る）。
+    要素の開きタグの後から、要素と同じ名前の最初の閉じタグの手前までを読む（_element_text と同じ）。stop_at_class が真なら、
+    その前に class を持つ開きタグがあればその手前で読み終え、欄の範囲（_time_range）が同じ名前の閉じタグより手前で終われば範囲の終わりで
+    読み終える（v2.15 / board_edit.py v1.11）。閉じタグも class を持つタグも無ければ範囲の終わりまで、範囲も決まらなければ block の終わりまで読む
+    （時刻の欄に使う。閉じタグの無い <span class="time">0:00<div><p class="task-title">… でも「0:00」になる＝閉じタグを
+    補っても鍵が変わらない。ブラウザは欄の中に後ろの要素を取り込むが、board.js も同じ所で読み終える）。
+    タグを除き、エンティティを復号し、改行を LF にそろえる（ブラウザは CR LF・CR を LF にして読むので、CR LF の板でも合わせる）。
+    """
+    for m in _CLASS_TAG_RE.finditer(block):
+        if cls_token in m.group(2).split():
+            end = block.find("</%s>" % m.group(1), m.end())
+            if stop_at_class:
+                # 欄の範囲（_time_range）の外は読まない＝閉じタグの無い欄は、ブラウザが閉じる所まで（v2.15 / board_edit.py v1.11。
+                # board.js の tbKeyText は DOM の欄を読むので同じになる）
+                r = _time_range(block, m)
+                if r is not None and (end == -1 or end > r[1]):
+                    end = r[1]
+                stop = _KEY_STOP_RE.search(block, m.end(), len(block) if end == -1 else end)
+                if stop:
+                    end = stop.start()
+                elif end == -1:
+                    end = len(block)
+            if end == -1:
+                return ""
+            text = html.unescape(_STRIP_TAGS_RE.sub("", block[m.end():end]))
+            return text.replace("\r\n", "\n").replace("\r", "\n")
+    return None
+
+
 def _item_key(block):
-    """item ブロックの key（board.js key() と同一定義）。"""
-    t = _element_text(block, "time")
-    ti = _element_text(block, "task-title")
-    return ((t or "") + "|" + (ti or "")).strip()
+    """item ブロックの key（board.js の key()・taskKey() と同一定義＝_key_text）。
+
+    「時刻の欄の文字（前後の空白を除く）|タイトルの文字」の前後の空白を除いたもの（v2.14。v2.13 までは時刻の欄を
+    _element_text で読み、空白を除かなかった）。
+    """
+    t = _key_text(block, "time", stop_at_class=True)
+    ti = _key_text(block, "task-title")
+    return ((t or "").strip() + "|" + (ti or "")).strip()
+
+
+def _time_open_unclosed(block):
+    """閉じていない時刻の欄の最初のもの（v2.14 / board_edit.py v1.10）。(開きタグの match, 読み終える位置) か、無ければ None。
+
+    閉じていない＝欄の開きタグの後、欄と同じ名前の最初の閉じタグより前に class を持つ開きタグがある形（v2.14 の _key_text が
+    そこで読み終えた形。v2.15 / board_edit.py v1.11 の _key_text は、欄の範囲〔_time_range〕がその開きタグより手前で終わる形では範囲の終わりで読み終える）。ブラウザはその要素を欄の中に取り込む。時刻の欄が2つ以上ある行では、どの欄も見る
+    （board.js の data-tb-unclosed・「ボードの点検」の⑥と同じ。board_edit.py の警告 K15 もこれで見る）。"""
+    for m in _CLASS_TAG_RE.finditer(block):
+        if "time" in m.group(2).split():
+            end = block.find("</%s>" % m.group(1), m.end())
+            stop = _KEY_STOP_RE.search(block, m.end(), len(block) if end == -1 else end)
+            if stop:
+                return m, stop.start()
+    return None
+
+
+def _time_close_at(block):
+    """閉じていない時刻の欄に閉じタグを補う位置（v2.14 / board_edit.py v1.10。board_edit.py の close-time と、Deck の日付の切り替え）。
+
+    (位置, タグ名) か、補えない理由: "none"（閉じていない欄が無い）・"div"（欄が div）・"after"（時刻の文字の後ろ、class を
+    持つタグより前にタグで囲んだ文字がある＝補うと欄の外へ出て鍵が変わる）・"text"（欄の始まりの直後に時刻の文字が無い）・
+    "count"（欄と同じ名前のタグの開きと閉じの数が、1つ足して合う形でない）。位置は時刻の文字（後ろの空白を除く）の直後。"""
+    hit = _time_open_unclosed(block)
+    if hit is None:
+        return "none"
+    m, stop = hit
+    tag = m.group(1)
+    if tag.lower() == "div":
+        return "div"
+    region = block[m.end():stop]
+    lt = region.find("<")
+    text = (region if lt == -1 else region[:lt]).rstrip()
+    if lt != -1 and html.unescape(_STRIP_TAGS_RE.sub("", region[lt:])).strip():
+        return "after"
+    if not text.strip():
+        return "text"
+    opens = len(re.findall(r"<%s\b[^>]*>" % re.escape(tag), block, re.I))
+    closes = len(re.findall(r"</%s\s*>" % re.escape(tag), block, re.I))
+    if opens != closes + 1:
+        return "count"
+    return m.end() + len(text), tag
 
 
 def _recalc_progress(lines):
@@ -2222,12 +2393,15 @@ def normalize_done_marks(text):
     return "".join(lines) if changed else None
 
 
-def apply_board_move(text, k, sec, before=None, head=False):
+def apply_board_move(text, k, sec, before=None, head=False, today=None, due=None, set_due=False):
     """純関数: board.html 全文 text に 1 件の移動を適用する。
 
     戻り値: (新テキスト or None, ステータスコード, メッセージ)
       200 = 適用成功 / 400 = 不正な入力 / 404 = key 不一致
     DECK マーカー間には一切触れない（走査対象からも除外）。
+    set_due が真で、今日の側（今日の予定・今日中）から「明日以降」へ動かすときは、利用者が決めた実施日 due（"YYYY-MM-DD" か
+    "YYYY-MM-DD H:MM"。明日以後の日付）か未定（None）を _later_due_shape で当てる（v2.13）。今日以前・読めない値は 400。
+    それ以外の移動では due を見ない。set_due が偽（要求に due が無い＝v2.12 と同時の board.js）なら行の形を変えない（従来どおり）。
     """
     if not isinstance(sec, str) or sec not in MOVABLE_SECTIONS:
         return None, 400, "不正な sec: %r" % (sec,)
@@ -2239,11 +2413,13 @@ def apply_board_move(text, k, sec, before=None, head=False):
 
     # 1) k に一致する item を移動対象3セクションから探す
     src = None
+    src_sec = None
     for (s, e, name) in items:
         if name is None:
             continue
         if _item_key("".join(lines[s:e + 1])) == k:
             src = (s, e)
+            src_sec = name
             break
     if src is None:
         return None, 404, "key に一致するタスクがありません"
@@ -2252,6 +2428,28 @@ def apply_board_move(text, k, sec, before=None, head=False):
     block = lines[src[0]:src[1] + 1]
     if not block[-1].endswith("\n"):
         block[-1] += "\n"  # 文書末の item を移動する場合の保険
+    if set_due and src_sec in ("今日の予定", "今日中") and sec == "明日以降":
+        # 利用者が決めた実施日（日付・時刻は任意）か未定を当てる（v2.13・2026-11-06 ユーザー決定）
+        day = today or date.today()
+        pd = None
+        if due is not None:
+            pd = parse_due_value(due) if isinstance(due, str) else None
+            if pd is None or pd[0] <= day:
+                return None, 400, "不正な due: %r（明日以後の日付か null）" % (due,)
+        shaped = _later_due_shape("".join(block), pd, "\r\n" if "\r\n" in text else "\n")
+        if shaped is None:
+            return None, 400, "実施日を当てられない形の行です"
+        block = shaped.splitlines(keepends=True)
+    if src_sec == "明日以降" and sec != "明日以降":
+        # 実施日のある行は、日付の切り替え・board_edit.py の move と同じ形にする（時刻の欄・未チップ・一度移した印・v2.10）。
+        # 印の有無・先の日の行かによらない（v2.11）。形が想定外なら、実施日の来た行に印だけ付ける（board_edit.py の move と同じ）。
+        # 位置は落とした位置のまま（before・head・末尾）
+        day = today or date.today()
+        joined = "".join(block)
+        due = _item_due_shapeable(joined)
+        nl = "\r\n" if "\r\n" in text else "\n"
+        shaped = _due_moved_shape(joined, due, day, nl, sec == "今日の予定") if due else None
+        block = (shaped if shaped is not None else _mark_due_moved(joined, day)).splitlines(keepends=True)
     del lines[src[0]:src[1] + 1]
     sections, items, deck_range = _scan_board(lines)
 
@@ -2294,7 +2492,7 @@ def apply_board_move(text, k, sec, before=None, head=False):
     return "".join(lines), 200, "ok"
 
 
-def apply_move_to_board(board_path, k, sec, before=None, head=False, deadline=None):
+def apply_move_to_board(board_path, k, sec, before=None, head=False, deadline=None, due=None, set_due=False):
     """board.html を読み、移動を適用してアトミックに書き戻す。(コード, メッセージ) を返す。
 
     read-modify-write 全体を _BOARD_LOCK で包み、inject と同時に走っても競合しない。
@@ -2319,7 +2517,7 @@ def apply_move_to_board(board_path, k, sec, before=None, head=False, deadline=No
             except (OSError, UnicodeDecodeError) as e:
                 log("警告: board.html を読めません（移動適用）: %s" % e)
                 return 500, "board.html を読めません"
-            new_text, code, msg = apply_board_move(text, k, sec, before, head)
+            new_text, code, msg = apply_board_move(text, k, sec, before, head, due=due, set_due=set_due)
             if code != 200:
                 return code, msg
             if new_text == text:
@@ -2373,9 +2571,11 @@ def apply_move_to_board(board_path, k, sec, before=None, head=False, deadline=No
 #                 data-orig-time に元の時刻を残す。そのままだと昨日の 9:00 が今日の 9:00 に鳴る）
 #   今日中・プロジェクト名のセクション … 済は捨て、残りは引き継ぐ（空になったプロジェクト名の見出しは除く）
 #   ルーチンタスク … 全部残し、済は未に戻す（毎日の定型作業のため）
-#   明日以降 … そのまま
-#   引き継いだ項目には data-carried-from="<元の日付>" を付ける（既にあれば最初の値を保つ）。
-#   .board には data-tb-rolled="<元の日付>" を付ける（board.js が「引き継いだボード」と知らせる。
+#   明日以降 … そのまま。ただし実施日（data-due）が今日以前で、済でなく、一度移した印（data-due-moved）の無い行は
+#                 今日の側へ移す（v2.8。_move_due_block）
+#   引き継いだ項目には data-carried-from="<元の日付>" を付ける（既にあれば最初の値を保つ）。data-orig-time はそれと組で、
+#   data-carried-from を新しく付けるときだけ書き、前から残るものは外す（v2.12。_set_item_open_tag）。
+#   .board には data-tb-rolled="<元の日付>" と件数（data-tb-rolled-carried・data-tb-rolled-due・v2.12）を付ける（board.js が「引き継いだボード」と知らせる。
 #   スキルの create がテンプレートから書き直せば消える）
 #   DECK マーカーの間はバイト列そのまま。ヘッダの日付・<title>・#upd-time・進捗は今日の値にする。
 # 元のボードは history/board-<元の日付>.html へバイト列のまま退避する（同名があれば -2, -3 …）。
@@ -2400,6 +2600,8 @@ _TITLE_DATE_RE = re.compile(r"\d{1,2}/\d{1,2}\s*[\(（][^\)）]{1,3}[\)）]")
 _UPD_TIME_RE = re.compile(r'(<span id="upd-time"[^>]*>)(.*?)(</span>)', re.S)
 _BOARD_TAG_RE = re.compile(r'<div class="board"([^>]*)>')
 ROLLED_FP_LEN = 16              # data-tb-rolled-fp に持たせる指紋の長さ（16進の文字数・v2.3）
+ROLLED_COUNT_ATTRS = ("data-tb-rolled-carried", "data-tb-rolled-due")   # 切り替えた件数（v2.12）。data-tb-rolled と一緒に外す
+_ROLLED_ATTRS_RE = r"data-tb-rolled(?:-fp|-carried|-due)?"
 _ITEM_OPEN_RE = re.compile(r'(<div class=")(item\b[^"]*)(")([^>]*)>')
 # class に time トークンを持つ要素の開始タグ（タグの種類は問わない。<div class="time"> に限ると
 # <span class="time">9:00</span> の行が時刻を残したまま今日中へ移り、今日のその時刻に鳴る）。
@@ -2410,6 +2612,7 @@ _TIME_OPEN_RE = re.compile(r'<(\w+)\b[^>]*?\bclass="(?:[^"]*\s)?time(?:\s[^"]*)?
 # class 属性を持つ span（class の前に別の属性があってもよい）。済チップの判定は _CHIP_DONE_RE と同じ
 _SPAN_CLASS_RE = re.compile(r'(<span\b[^>]*?\bclass=")([^"]*)("[^>]*>)([^<]*)(</span>)')
 _FOOTER_LINE_RE = re.compile(r"^[ \t]*<footer\b")
+_DUE_VALUE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?: (\d{1,2}):(\d{2}))?$")
 
 
 class RolloverError(Exception):
@@ -2498,16 +2701,21 @@ def _canon_label(label):
 
 
 def _set_item_open_tag(block, carried_from=None, orig_time=None, add_flat=False):
-    """item ブロックの開始タグに flat・data-carried-from・data-orig-time を足す。"""
+    """item ブロックの開始タグに flat・data-carried-from・data-orig-time を足す。
+
+    data-orig-time は data-carried-from と組（引き継いだ日のボードで、その行が持っていた時刻。board.js が「↪ 11/5 9:00 の予定から」と
+    出す）なので、data-carried-from を新しく付けるときだけ書き、前から残る data-orig-time（D&D・move が時刻の欄を外したときに残した、
+    実施日の時刻。引き継いだ日の時刻とは限らない）は外す。data-carried-from が既にある行は、どちらも変えない（最初の値を保つ・v2.12）。"""
     def fix(m):
         cls = m.group(2)
         if add_flat:
             cls = _toggle_class_token(cls, "flat", True)
         attrs = m.group(4)
-        if carried_from and "data-carried-from=" not in attrs:
+        if carried_from and not re.search(r'\sdata-carried-from="', attrs):
+            attrs = re.sub(r'\s+data-orig-time="[^"]*"', "", attrs)
             attrs += ' data-carried-from="%s"' % carried_from
-        if orig_time is not None and "data-orig-time=" not in attrs:
-            attrs += ' data-orig-time="%s"' % html.escape(orig_time.strip(), quote=True)
+            if orig_time is not None:
+                attrs += ' data-orig-time="%s"' % html.escape(orig_time.strip(), quote=True)
         return m.group(1) + cls + m.group(3) + attrs + ">"
 
     return _ITEM_OPEN_RE.sub(fix, block, count=1)
@@ -2529,11 +2737,115 @@ def _reset_done_chip(block):
     return _SPAN_CLASS_RE.sub(fix, block)
 
 
+# 閉じタグの無い要素がブラウザでどこまで続くか（_implied_close・v2.14 / board_edit.py v1.10。外側で開いていない閉じタグを読み飛ばすのと、
+# p を後ろの block 要素の手前で閉じるのは v2.15 / board_edit.py v1.11）
+_TAG_TOKEN_RE = re.compile(r'<(/?)([A-Za-z][\w-]*)\b[^>]*?(/?)>')
+_VOID_TAGS = frozenset(("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"))
+# p を閉じる開きタグ（HTML の構文解析で p を閉じる要素。互換モードに合わせて table は入れない＝board-template.html から作った板は doctype が無く
+# 互換モードで開かれ、そこでは table は p を閉じない。手で doctype を足した板〔標準モード〕では table も p を閉じるので、その板の
+# <p class="time">…<table> だけは画面と違う所で閉じる）。ブラウザがこれらの開きタグで p を閉じるのは、p が button scope にあるとき
+# （欄の p と開きタグの間に button・表などの境界の要素が無いとき）で、ここではその前提を置いて調べない（手書きでしか生まれない形）
+_P_CLOSERS = frozenset(("address", "article", "aside", "blockquote", "center", "dd", "details", "dialog", "dir", "div", "dl", "dt",
+                        "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr",
+                        "li", "listing", "main", "menu", "nav", "ol", "p", "plaintext", "pre", "search", "section", "summary", "ul", "xmp"))
+
+
+def _open_stack(block, upto):
+    """block の先頭から upto までに開いて、まだ閉じていない要素の名前の並び（外側から順。v2.15 / board_edit.py v1.11）。"""
+    stack = []
+    for t in _TAG_TOKEN_RE.finditer(block, 0, upto):
+        name = t.group(2).lower()
+        if not t.group(1):
+            if not t.group(3) and name not in _VOID_TAGS:
+                stack.append(name)
+        elif name in stack:
+            while stack.pop() != name:
+                pass
+    return stack
+
+
+def _implied_close(block, pos, outer=()):
+    """閉じタグの無い要素の終わり（v2.14 / board_edit.py v1.10 で新設。outer と、開いていない閉じタグの読み飛ばしは v2.15 / board_edit.py v1.11）。pos（要素の開きタグの直後）から読み、外側で開いている要素（outer＝
+    _open_stack）の閉じタグの位置を返す。無ければ None。ブラウザはそこで閉じタグの無い要素を閉じる。中で開いた要素の閉じタグは読み飛ばし、
+    void 要素と /> は開いたものに数えない。中でも外側でも開いていない要素の閉じタグ（<span class="time">9:00</b>… の </b>）は、ブラウザと
+    同じく読み飛ばす（v2.15 / board_edit.py v1.11。v2.14 はそこで閉じた）。ブラウザの構文解析のすべてをなぞるものではない——なぞるのは
+    この2つと、_time_range の p の扱いだけで、表・書式要素の付け替えなど手書きでしか生まれない形は、画面と違う所で閉じることがある
+    （例: 外側の閉じタグの後に欄と同じ名前の閉じタグがある <span class="time">9:00</div>tail</span></div> は、_time_range が同じ名前の
+    閉じタグまでを欄とみなすので、画面より広くなる）。
+    _remove_time_elements・_key_text が、閉じタグの無い時刻の欄を画面と同じ所までの欄として扱うために使う（board.js は DOM しか見られない
+    ので、画面の側に合わせる）。"""
+    stack = []
+    for t in _TAG_TOKEN_RE.finditer(block, pos):
+        name = t.group(2).lower()
+        if not t.group(1):
+            if not t.group(3) and name not in _VOID_TAGS:
+                stack.append(name)
+            continue
+        if name in stack:
+            while stack.pop() != name:
+                pass
+            continue
+        if name in outer:
+            return t.start()
+    return None
+
+
+def _time_range(block, m):
+    """時刻の欄（開きタグの match＝m。group(1) がタグ名）の、ブラウザが欄とみなす範囲（v2.15 / board_edit.py v1.11）。
+    (中身の始まり, 中身の終わり, 要素の終わり) か、決まらなければ None。
+
+    要素の終わりは、同じタグ名の開きと閉じを数えて決める（入れ子に強い）。閉じタグが見つからない要素は、ブラウザが閉じる所
+    （外側の要素の閉じタグの手前＝_implied_close）まで。欄が p なら、その前に p を閉じる要素（div・li など＝_P_CLOSERS）が始まればその手前まで
+    （ブラウザは p をそこで閉じる。互換モードの板に合わせた集合で、標準モードの板の table だけは違う＝_P_CLOSERS の前の注釈）。項目の閉じタグは項目の中にあるので、閉じタグの無い欄でもふつうは決まる。"""
+    tag = m.group(1)
+    tok_re = re.compile(r"<(/?)%s\b[^>]*>" % re.escape(tag), re.I)
+    depth = 1
+    end = inner_end = None
+    for tm in tok_re.finditer(block, m.end()):
+        if tm.group(0).endswith("/>"):
+            continue
+        depth += -1 if tm.group(1) else 1
+        if depth == 0:
+            end, inner_end = tm.end(), tm.start()
+            break
+    if end is None:
+        end = inner_end = _implied_close(block, m.end(), _open_stack(block, m.start()))
+        if end is None:
+            return None
+    if tag.lower() == "p":
+        for t in _TAG_TOKEN_RE.finditer(block, m.end(), inner_end):
+            if not t.group(1) and t.group(2).lower() in _P_CLOSERS:
+                end = inner_end = t.start()
+                break
+    return m.end(), inner_end, end
+
+
+def _time_text(block):
+    """行の時刻の欄の文字（v2.15 / board_edit.py v1.11）。行の鍵の時刻の部分と同じ読み方（_key_text の stop_at_class）で、
+    board.js の tbTimeText（✎ の data-orig・D&D の形作り）と同じ。時刻の欄が無ければ None。
+    日付の切り替え・D&D の形作り・move・K14 など、時刻の欄の時刻を読む所はすべてこれで読む（v2.14 / v1.10 までは _element_text で
+    最初の同じ名前の閉じタグまで読み、閉じタグの無い欄では後ろの文字〔チップの「未」など〕まで時刻の文字に入った）。"""
+    return _key_text(block, "time", stop_at_class=True)
+
+
+# 時刻の欄を外すとき、中にあれば外さない行の部品（タイトル・補足・チップの箱・チップ・項目。v2.14 / board_edit.py v1.10。_remove_time_elements）。
+# class の書き方（空白・大文字・' の引用符・引用符なし）を問わない（ブラウザはどの書き方でも部品として扱う。_KEY_STOP_RE と同じ広さ）。
+# class の値も大文字小文字を区別しない（board-template.html から作ったボードは doctype が無く互換モードで開かれ、ブラウザの class セレクタと
+# CSS が class の値の大文字小文字を区別しないため。class="Chip" も部品＝board.js の tbTimeHasPart と同じ。tbTimeHasPart は class の値を
+# 小文字にそろえて比べるので、手で doctype を足した板〔標準モード〕でも同じ判定になる）
+_ROW_PART_RE = re.compile(r'<\w+\b[^>]*?\sclass\s*=\s*["\']?(?:[^"\'>]*\s)?(?:task-title|task-note|chips|chip|item)(?=["\'\s>/])', re.I)
+
+
 def _remove_time_elements(block):
     """class に time を持つ要素を、対応する閉じタグまで丸ごと外す。(外した後の文字列, 外した数) を返す。
 
-    要素の終わりは、同じタグ名の開きと閉じを数えて決める（入れ子に強い）。閉じタグが見つからない
-    要素は外さずに数えない（その場合、外した数が1にならず切り替えを止める＝構造が崩れた板の扱い）。
+    要素の範囲は _time_range（同じタグ名の開きと閉じを数えて決め、閉じタグが見つからない要素は、ブラウザが閉じる所＝外側の要素の閉じタグの
+    手前まで。v2.14 / board_edit.py v1.10。board.js の画面と同じ欄になる。v2.13 までは外さずに数えなかった）。範囲が決まらない要素は外さずに
+    数えない（項目の閉じタグは項目の中にあるので、ふつうは起きない。起きれば外した数が1にならず切り替えを止める）。
+    要素の中に行の部品（タイトル・補足・チップの箱・チップ・項目＝_ROW_PART_RE）があるときも外さずに数えない
+    （v2.14 / board_edit.py v1.10。閉じタグの無い欄の閉じが項目の終わりに置かれた形〔<span class="time">9:00 … </span></div>〕では、
+    外すとタイトル・補足・チップが一緒に消えた。v2.13 までの日付の切り替え・D&D・move はそのまま外した）。呼ぶ側は外した数が
+    1でなければ形を作らない（切り替えは止め、D&D・move は印だけを付けるか断る）。
     要素の前が空白だけなら、その空白と、要素の後ろの空白・改行1つも一緒に外す（行ごと消す）。
     """
     out = []
@@ -2543,19 +2855,11 @@ def _remove_time_elements(block):
         m = _TIME_OPEN_RE.search(block, pos)
         if not m:
             break
-        tag = m.group(1)
-        tok_re = re.compile(r"<(/?)%s\b[^>]*>" % re.escape(tag), re.I)
-        depth = 1
-        i = m.end()
-        end = None
-        for tm in tok_re.finditer(block, i):
-            if tm.group(0).endswith("/>"):
-                continue
-            depth += -1 if tm.group(1) else 1
-            if depth == 0:
-                end = tm.end()
-                break
-        if end is None:
+        r = _time_range(block, m)     # ブラウザが欄とみなす範囲（閉じタグの無い欄は閉じる所まで・v2.14。p と読み飛ばす閉じタグは v2.15）
+        end = inner_end = None
+        if r is not None:
+            _s, inner_end, end = r
+        if end is None or _ROW_PART_RE.search(block, m.end(), inner_end):
             out.append(block[pos:m.end()])
             pos = m.end()
             continue
@@ -2573,10 +2877,186 @@ def _remove_time_elements(block):
     return "".join(out), count
 
 
+def _insert_status_chip(block, nl):
+    """状態チップが無い item に「未」を足す（chips の欄が無ければ欄ごと、内側の閉じの前に足す）。作れなければ None。"""
+    for m in _SPAN_CLASS_RE.finditer(block):
+        tokens = m.group(2).split()
+        if "chip" in tokens and any(t in tokens for t in ("done", "active", "pending", "hold")):
+            return block
+    chip = '<span class="chip pending">未</span>'
+    m = re.search(r'(<div class="chips"[^>]*>)(.*?)(</div>)', block, re.S)
+    if m:
+        return block[:m.end(2)] + chip + block[m.end(2):]
+    last = block.rfind("</div>")
+    inner = block.rfind("</div>", 0, last) if last != -1 else -1
+    if inner == -1:
+        return None
+    ls = block.rfind("\n", 0, inner) + 1
+    if block[ls:inner].strip():
+        return block[:inner] + '<div class="chips">' + chip + "</div>" + block[inner:]
+    ind = block[ls:inner]
+    return block[:ls] + ind + '  <div class="chips">' + chip + "</div>" + nl + block[ls:]
+
+
+def _valid_hm(text):
+    """H:MM（時 0〜23・分 0〜59）なら "H:MM"（時の先頭の 0 を落とす）、そうでなければ None。行の時刻の欄を時刻として使うかの判定（v2.11）。"""
+    m = re.match(r"^(\d{1,2}):(\d{2})$", (text or "").strip())
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        return None
+    return "%d:%s" % (int(m.group(1)), m.group(2))
+
+
+def _due_moved_shape(block, due, today, nl, to_plan):
+    """「明日以降」から今日の側へ動かす行の形（Deck の日付の切り替え・D&D の反映・board_edit.py の move で同じ）。
+
+    行の時刻は、時刻の欄が H:MM（時 0〜23・分 0〜59）ならその時刻、無ければ実施日の時刻（v2.11。時刻の欄を書く操作は実施日の
+    時刻も同じ値にするので、ふつうは同じ値。違う行〔v1.6 までの操作でできた行〕では時刻の欄を使う＝2026-11-05 ユーザー決定。
+    どちらが後から書かれたかは板からは分からない）。to_plan は行き先が「今日の予定」か。行き先が「今日の予定」で、実施日が今日で
+    時刻があれば、時刻の欄をその時刻にして flat を外す（通知の対象になる）。それ以外（前の日・先の日の行、今日中へ動かす行）は
+    時刻の欄を外して flat を付ける（その日の時刻を、今日のその時刻に鳴らさない）。外した時刻の欄は data-orig-time に残さない
+    （行の時刻は data-due か data-due-from に残る。ただし H:MM でない時刻の欄の文字と、data-due-from が既にある行で時刻の欄の時刻がその時刻と違うときの時刻の欄の時刻は、どこにも残らない。data-orig-time は日付の切り替えが
+    data-carried-from と組で書く＝Deck v2.12・board_edit.py v1.8。v2.11・v1.7 までは残し、引き継いだ翌日のチップが別の日の時刻を出した）。
+    状態チップが無ければ「未」を足す。
+    実施日は今日にする（時刻の欄を付けるならその時刻を含め、付けないなら日付だけ。2026-11-05 ユーザー決定）。実施日が先の日の行
+    （前もって今日の側へ動かす行）も今日の行として扱い、実施日を今日にする（時刻は付けない＝前の日の行と同じく時刻の欄を外して flat。
+    2026-11-06 ユーザー決定・v2.13・board_edit.py v1.9。v2.12・v1.8 までは先の日の行の日付も印も変えず、実施日の日が来ても鳴らなかった）。
+    元の実施日は data-due-from に残し（既にあれば変えない。日付は元の実施日の日付、時刻は行の時刻＝v2.12・v1.8。v2.11・v1.7 までは
+    元の data-due そのままで、時刻の欄と実施日の時刻が違う行〔v1.6 までの操作でできた行〕では実施日の時刻が残った）、
+    一度移した印を付ける（既にあれば変えない。先の日の行にも付ける＝今日の行になったので、他の今日の側の行と同じ・v2.13。
+    「明日以降」へ戻すときは利用者が実施日を決め直し、印は外れる＝_later_due_shape）。
+    形が想定外（時刻の欄が2つ以上など）なら None。
+    日付の切り替えは to_plan=True で呼び、出来上がりに時刻の欄があれば「今日の予定」、無ければ「今日中」へ置く（_move_due_block）。"""
+    when = due[1]
+    n_time = len(_TIME_OPEN_RE.findall(block))
+    old_time = None
+    if n_time > 1:
+        return None
+    if n_time == 1:
+        old_time = (_time_text(block) or "").strip()
+        block, removed = _remove_time_elements(block)
+        if removed != 1:
+            return None
+        when = _valid_hm(old_time) or when
+    block = _insert_status_chip(block, nl)
+    if block is None:
+        return None
+    scheduled = bool(when) and due[0] == today and to_plan
+    new_due = today.isoformat() + (" " + when if scheduled else "")   # 先の日の行も今日にする（v2.13）
+
+    def fix(m):
+        cls = _toggle_class_token(m.group(2), "flat", not scheduled)
+        attrs = m.group(4)
+        raw = re.search(r'\sdata-due="([^"]*)"', attrs).group(1)
+        if new_due != raw:
+            attrs = re.sub(r'(\sdata-due=")[^"]*(")', lambda a: a.group(1) + new_due + a.group(2), attrs, count=1)
+        if not re.search(r'\sdata-due-moved="', attrs):
+            attrs += ' data-due-moved="%s"' % today.isoformat()
+        if not re.search(r'\sdata-due-from="', attrs):
+            attrs += ' data-due-from="%s"' % (due[0].isoformat() + (" " + when if when else ""))
+        return m.group(1) + cls + m.group(3) + attrs + ">"
+
+    m = _ITEM_OPEN_RE.search(block)
+    if not m:
+        return None
+    tag = fix(m)
+    rest = block[m.end():]
+    if scheduled:
+        time_el = '<div class="time">%s</div>' % html.escape(when, quote=False)
+        if rest.startswith(("\r\n", "\n")):
+            ind = re.match(r"[ \t]*", block).group(0)
+            tag += nl + ind + "  " + time_el
+        else:
+            tag += time_el
+    return block[:m.start()] + tag + rest
+
+
+def _later_due_shape(block, due, nl):
+    """今日の側から「明日以降」へ動かす行に、利用者が決めた実施日を当てる（D&D の反映・board_edit.py の move で同じ・Deck v2.13・
+    board_edit.py v1.9・2026-11-06 ユーザー決定）。due は (date, "H:MM" か None)、未定なら None。
+
+    実施日はその値にし、一度移した印（data-due-moved）と元の実施日（data-due-from）は外す（その日に日付の切り替えが今日の側へ
+    移す対象にする。元の予定は決め直した値に置き換わり、その日に移したときにあらためて data-due-from に残る）。行の時刻は1つにする:
+    時刻の欄が1つある行は、実施日に時刻があれば時刻の欄をその時刻にし、無ければ時刻の欄を外す（flat を付ける）。時刻の欄の
+    無い行には足さない。未定（None）は実施日・印・元の実施日を外し、時刻の欄は変えない。時刻の欄が2つ以上の行は時刻の欄を変えない。
+    形が想定外なら None。"""
+    m = _ITEM_OPEN_RE.search(block)
+    if not m:
+        return None
+    n_time = len(_TIME_OPEN_RE.findall(block))
+    put_time = None
+    timed = n_time > 0
+    if due is not None and n_time == 1:
+        block, removed = _remove_time_elements(block)
+        if removed != 1:
+            return None
+        put_time = due[1]
+        timed = bool(put_time)
+        m = _ITEM_OPEN_RE.search(block)
+        if not m:
+            return None
+    attrs = re.sub(r'\sdata-due(?:-moved|-from)?="[^"]*"', "", m.group(4))
+    if due is not None:
+        attrs += ' data-due="%s"' % (due[0].isoformat() + (" " + due[1] if due[1] else ""))
+    tag = m.group(1) + _toggle_class_token(m.group(2), "flat", not timed) + m.group(3) + attrs + ">"
+    rest = block[m.end():]
+    if put_time:
+        time_el = '<div class="time">%s</div>' % html.escape(put_time, quote=False)
+        if rest.startswith(("\r\n", "\n")):
+            ind = re.match(r"[ \t]*", block).group(0)
+            tag += nl + ind + "  " + time_el
+        else:
+            tag += time_el
+    return block[:m.start()] + tag + rest
+
+
+def _move_due_block(block, due, today, nl):
+    """「明日以降」の行を今日の側の形にする。(新しいブロック, "今日の予定" か "今日中") を返す。形が想定外なら None（動かさない）。
+
+    形は _due_moved_shape（D&D の反映・board_edit.py の move と同じ）。実施日が今日で時刻があれば時刻の要素を付けて「今日の予定」へ
+    （通知の対象になる）、それ以外は時刻の要素を付けずに「今日中」へ。前の日の時刻は要素にしない（今日のその時刻に鳴るため）。
+    行の時刻は、時刻の要素が H:MM ならその時刻、無ければ実施日の時刻（v2.11）。移した行の実施日は今日になり、元の実施日
+    （いつの予定だったか）は data-due-from に残る（v2.11）。"""
+    shaped = _due_moved_shape(block, due, today, nl, True)
+    if shaped is None:
+        return None
+    return shaped, ("今日の予定" if _TIME_OPEN_RE.search(shaped) else "今日中")
+
+
 def _div_balance(text):
     """コメントの外の <div の数 − </div> の数。"""
     blanked = "".join(_blank_comments(text.splitlines(keepends=True)))
     return len(re.findall(r"<div\b", blanked)) - blanked.count("</div>")
+
+
+def _carry_due_today(block, today, removed_time=None):
+    """今日の側から引き継ぐ行で、実施日（data-due）が今日でなければ、実施日を今日にする（v2.11・2026-11-05 ユーザー決定。先の日の行は v2.13）。
+
+    今日の側にある行は今日やる行なので、実施日は今日にする（_due_moved_shape で今日の側へ移した行と同じ）。時刻は、行に残る時刻の欄が
+    H:MM ならその時刻を含め、無ければ日付だけにする（前の日の時刻を今日の時刻にしない）。元の実施日は data-due-from に残し
+    （既にあれば変えない。日付は元の実施日の日付、時刻は行の時刻＝残る時刻の欄か、今日の予定から引き継ぐときに外した時刻の欄
+    〔removed_time〕が H:MM ならその時刻、無ければ実施日の時刻。_due_moved_shape と同じ・v2.12。v2.11 は元の値そのままだった）、
+    一度移した印が無ければ付ける（今日の側の行の印。旧版の経路〔due を送らない D&D など〕で「明日以降」へ戻したときに、また移さない
+    ため。v2.13 の D&D・board_edit.py v1.9 の move で戻すときは実施日を決め直し、印は外れる＝_later_due_shape）。
+    実施日が先の日の行も同じく今日にする（今日の側の行は今日の行＝2026-11-06 ユーザー決定・v2.13。v2.12 までに先の日の行を前もって
+    今日の側へ動かした行は実施日が先の日のまま残り、その日が来ても鳴らなかったので、ここで直る）。
+    実施日が今日・読めない行、実施日の無い行はそのまま。v2.10 までに移して実施日が前の日のまま残った行も、ここで直る。"""
+    raw = _item_open_attr(block, "data-due")
+    due = parse_due_value(raw)
+    if due is None or due[0] == today:
+        return block
+    t = _valid_hm(_time_text(block) or "") if len(_TIME_OPEN_RE.findall(block)) == 1 else None
+    new_due = today.isoformat() + (" " + t if t else "")
+    rt = t or _valid_hm(removed_time or "") or due[1]
+    came = due[0].isoformat() + (" " + rt if rt else "")
+
+    def fix(m):
+        attrs = re.sub(r'(\sdata-due=")[^"]*(")', lambda a: a.group(1) + new_due + a.group(2), m.group(4), count=1)
+        if not re.search(r'\sdata-due-moved="', attrs):
+            attrs += ' data-due-moved="%s"' % today.isoformat()
+        if not re.search(r'\sdata-due-from="', attrs):
+            attrs += ' data-due-from="%s"' % came
+        return m.group(1) + m.group(2) + m.group(3) + attrs + ">"
+    return _ITEM_OPEN_RE.sub(fix, block, count=1)
 
 
 def roll_board_text(text, today, now_hm):
@@ -2600,7 +3080,9 @@ def roll_board_text(text, today, now_hm):
     sec_at = {i: label for (i, label, _c) in sections}
     item_at = {s: e for (s, e, _n) in items}
 
-    info = {"from": from_iso, "carried": 0, "moved": 0, "dropped_done": 0, "routine_reset": 0}
+    info = {"from": from_iso, "carried": 0, "moved": 0, "dropped_done": 0, "routine_reset": 0, "due_moved": 0}
+    due_plan = []       # 「今日の予定」へ移す、実施日が来た item（v2.8）
+    due_rest = []       # 「今日中」へ移す、実施日が来た item（v2.8）
     out = []            # 出力する「塊」の並び: ("line", 文字列) / ("label", 文字列, 正規名) / ("item", 文字列)
     moved = []          # 今日中の先頭へ移す item
     cur = None          # 直近のセクションの正規名（"" はプロジェクト名のセクション、None はセクション前）
@@ -2622,7 +3104,17 @@ def roll_board_text(text, today, now_hm):
             block = "".join(lines[i:e + 1])
             i = e + 1
             done = bool(_CHIP_DONE_RE.search(block))
-            if cur is None or cur == "明日以降":
+            if cur == "明日以降":
+                due = _item_due_pending(block, today)
+                placed = _move_due_block(block, due, today, nl) if due else None
+                if placed is None:
+                    out.append(("item", block))
+                    continue
+                info["due_moved"] += 1
+                (due_plan if placed[1] == "今日の予定" else due_rest).append(placed[0])
+                out.append(("dropped", ""))
+                continue
+            if cur is None:
                 out.append(("item", block))
                 continue
             if cur == "ルーチンタスク":
@@ -2636,17 +3128,24 @@ def roll_board_text(text, today, now_hm):
                 out.append(("dropped", ""))
                 continue
             info["carried"] += 1
-            t = _element_text(block, "time")
+            t = _time_text(block)
             if cur == "今日の予定" and t is not None:
+                # 閉じタグの無い時刻の欄は、閉じタグを補ってから外す（v2.14。補わないと欄の終わりが決まらず、切り替えが止まる。
+                # 補える形だけ＝board_edit.py の close-time と同じ _time_close_at。補えない形で、外すと行の部品が一緒に消える欄・
+                # 終わりの決まらない欄は _remove_time_elements が外さないので、下で止める）
+                at = _time_close_at(block)
+                if isinstance(at, tuple):
+                    block = block[:at[0]] + "</%s>" % at[1] + block[at[0]:]
+                    t = _time_text(block)
                 block2, n_time = _remove_time_elements(block)
                 if n_time != 1:
                     raise RolloverError("時刻の要素を1つに決められない項目がある（%d 個）" % n_time)
                 block2 = _set_item_open_tag(block2, carried_from=from_iso, orig_time=t, add_flat=True)
-                moved.append(block2)
+                moved.append(_carry_due_today(block2, today, removed_time=t))
                 info["moved"] += 1
                 out.append(("dropped", ""))
                 continue
-            out.append(("item", _set_item_open_tag(block, carried_from=from_iso)))
+            out.append(("item", _carry_due_today(_set_item_open_tag(block, carried_from=from_iso), today)))
             continue
         out.append(("line", lines[i]))
         i += 1
@@ -2681,7 +3180,44 @@ def roll_board_text(text, today, now_hm):
                 continue
         final.append(part)
 
+    # 実施日が来た時刻付きの項目を今日の予定へ（時系列の位置）。今日の予定が無ければ、最初の見出し／DECK の前に作る
+    if due_plan:
+        pos = None
+        for k, part in enumerate(final):
+            if part[0] == "label" and part[2] == "今日の予定":
+                pos = k + 1
+                break
+        if pos is None:
+            for k, part in enumerate(final):
+                if part[0] == "label" or (part[0] == "line" and MARKER_START in part[1]):
+                    final.insert(k, ("label", '  <div class="section-label">今日の予定</div>' + nl, "今日の予定"))
+                    pos = k + 1
+                    break
+            if pos is None:
+                raise RolloverError("今日の予定セクションを置く位置が決まらない")
+
+        def _minutes(b):
+            mm = re.search(r"(\d{1,2}):(\d{2})", _time_text(b) or "")
+            return int(mm.group(1)) * 60 + int(mm.group(2)) if mm else None
+
+        for b in sorted(due_plan, key=_minutes):
+            at = None
+            end = pos
+            k = pos
+            while k < len(final):
+                part = final[k]
+                if part[0] == "label" or (part[0] == "line" and MARKER_START in part[1]):
+                    break
+                if part[0] == "item":
+                    end = k + 1
+                    t0 = _minutes(part[1])
+                    if at is None and t0 is not None and t0 > _minutes(b):
+                        at = k
+                k += 1
+            final.insert(end if at is None else at, ("item", b))
+
     # 移した時刻付きの項目を今日中の先頭へ。今日中が無ければ、ルーチンタスク／明日以降／DECK の前に作る
+    moved = moved + due_rest
     if moved:
         pos = None
         for k, part in enumerate(final):
@@ -2716,9 +3252,12 @@ def roll_board_text(text, today, now_hm):
         new_text, count=1)
     new_text = _UPD_TIME_RE.sub(lambda m: m.group(1) + now_hm + m.group(3), new_text, count=1)
 
+    # 切り替えた件数（引き継いだ行・「明日以降」から移した行）も持たせる。board.js が「引き継いだボード」の知らせに出す（v2.12。
+    # 行の印から数えると、切り替えの後に add・create が印を足した行や、D&D で動かした行まで数えるため）
     def fix_board(m):
-        attrs = re.sub(r'\s*data-tb-rolled(?:-fp)?="[^"]*"', "", m.group(1))
-        return '<div class="board"%s data-tb-rolled="%s">' % (attrs, from_iso)
+        attrs = re.sub(r'\s*%s="[^"]*"' % _ROLLED_ATTRS_RE, "", m.group(1))
+        return '<div class="board"%s data-tb-rolled="%s" data-tb-rolled-carried="%d" data-tb-rolled-due="%d">' % (
+            attrs, from_iso, info["carried"], info["due_moved"])
 
     new_text, nb = _BOARD_TAG_RE.subn(fix_board, new_text, count=1)
     if nb != 1:
@@ -2960,6 +3499,67 @@ def _restore_markers(text):
 _hand_fp = {}   # {board_path: 指紋}
 
 
+def parse_due_value(value):
+    """実施日の値（YYYY-MM-DD か YYYY-MM-DD H:MM）→ (date, "H:MM" か None)。読めなければ None。"""
+    m = _DUE_VALUE_RE.match(value or "")
+    if not m:
+        return None
+    try:
+        d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+    if m.group(4) is None:
+        return d, None
+    if int(m.group(4)) > 23 or int(m.group(5)) > 59:
+        return None
+    return d, "%d:%s" % (int(m.group(4)), m.group(5))
+
+
+def _item_open_attr(block, name):
+    """item の開始タグの属性 name の値（無ければ None）。"""
+    m = _ITEM_OPEN_RE.search(block)
+    if not m:
+        return None
+    a = re.search(r'\s%s="([^"]*)"' % re.escape(name), m.group(4))
+    return a.group(1) if a else None
+
+
+def _item_due_pending(block, today):
+    """「明日以降」の行で、今日の側へ移す対象なら (date, "H:MM" か None)、そうでなければ None。
+
+    実施日が今日以前・済でない・一度移した印（data-due-moved）が無い、の3つがそろうときだけ。
+    印は日付の切り替えが移し直さないための印。今日の側の行を「明日以降」へ戻すときは実施日を決め直し、印は外れる
+    （_later_due_shape・Deck v2.13・board_edit.py v1.9）ので、その行は決めた日に移る。印が付いたまま「明日以降」にあるのは、
+    旧版（Deck v2.12 以前か due を送らない board.js の D&D・board_edit.py v1.8 以前の move）で戻した行と、印を写した行
+    （add の --due-moved・spec の due_moved）で、それらは移し直さない。"""
+    due = parse_due_value(_item_open_attr(block, "data-due"))
+    if due is None or due[0] > today:
+        return None
+    if _CHIP_DONE_RE.search(block) or _item_open_attr(block, "data-due-moved") is not None:
+        return None
+    return due
+
+
+def _mark_due_moved(block, today):
+    """「明日以降」から今日の側へ動かす行に、実施日が来ていれば一度移した印を付ける（どの経路で動かしても同じ印。日付の切り替えが
+    移し直さないための印で、「明日以降」へ戻すときは実施日を決め直し、印は外れる＝_later_due_shape）。"""
+    if _item_due_pending(block, today) is None:
+        return block
+    return _ITEM_OPEN_RE.sub(lambda m: m.group(0)[:-1] + ' data-due-moved="%s">' % today.isoformat(), block, count=1)
+
+
+def _item_due_shapeable(block):
+    """「明日以降」から今日の側へ動かす行で、形を作る対象なら実施日 (date, "H:MM" か None)、そうでなければ None（move・D&D・v2.11）。
+
+    実施日が読めて済でない行は、一度移した印の有無にも、実施日が先の日かにもよらず対象にする（印は日付の切り替えが
+    移し直さないための印で、形の規則は変えない。印のある「明日以降」の行は、旧版で戻した行か印を写した行＝_item_due_pending）。
+    日付の切り替えが移す対象を決めるのは _item_due_pending（印を見る）。"""
+    due = parse_due_value(_item_open_attr(block, "data-due"))
+    if due is None or _CHIP_DONE_RE.search(block):
+        return None
+    return due
+
+
 def hand_fingerprint(text):
     lines = text.splitlines(keepends=True)
     sections, items, _deck = _scan_board(lines)
@@ -3006,9 +3606,10 @@ def derive_header(text, board_path, mtime):
         else:
             strip = prev is not None and fp != prev
     else:
-        strip = stored is not None   # 印が無いのに指紋だけ残っている（書き写し等）なら片付ける
+        # 印が無いのに指紋・件数だけ残っている（書き写し等）なら片付ける
+        strip = stored is not None or any(board_attr(text, a) is not None for a in ROLLED_COUNT_ATTRS)
     if strip:
-        text = set_board_attrs(text, remove=("data-tb-rolled", "data-tb-rolled-fp"))
+        text = set_board_attrs(text, remove=("data-tb-rolled", "data-tb-rolled-fp") + ROLLED_COUNT_ATTRS)
     today = date.today()
     bd = parse_board_date(board_header_date_text(text), today)
     if bd is not None:
@@ -3399,9 +4000,9 @@ def try_rollover(board_path, today=None, now=None, assets_dir=DEFAULT_SKILL_ASSE
     state_written = update_state_date(board_path, today)
     copied = sync_assets(board_path, assets_dir)
     log("日付の切り替え: %s → %s（引き継ぎ %d 件〔うち時刻付きを今日中へ %d 件〕・済を除外 %d 件・"
-        "ルーチンを未に %d 件・退避 %s・state.json %s・静的ファイル %d 件）"
+        "ルーチンを未に %d 件・実施日が来て今日へ %d 件・退避 %s・state.json %s・静的ファイル %d 件）"
         % (info["from"], today.isoformat(), info["carried"], info["moved"], info["dropped_done"],
-           info["routine_reset"], os.path.relpath(hpath, os.path.dirname(os.path.abspath(board_path))),
+           info["routine_reset"], info["due_moved"], os.path.relpath(hpath, os.path.dirname(os.path.abspath(board_path))),
            "更新" if state_written else "そのまま", copied))
     return "rolled"
 
@@ -3727,7 +4328,8 @@ def read_board_alarms(board_path, overrides=None):
     """board.html から時刻付き・未完了の item を拾う。
 
     返り値: [(発火済み判定に使うキー, 予定時刻の分, 表示時刻文字列, タイトル), ...]
-    board.js の checkAlarms と同じ条件で絞る（time 要素があり、済チップを持たない item）。
+    board.js の checkAlarms と同じ条件で絞る（time 要素があり、済チップを持たず、「明日以降」にない item）。
+    「明日以降」の行は今日の予定ではないので除く（v2.8。実施日の時刻は data-due にあり、その日に今日の側へ移ってから鳴る）。
     完了判定はチップを唯一の真実とする（done-item クラスは board.js が表示時に付けるため
     HTML 正本には無いことがある・board.js の完了表示自動整合と同じ考え方）。
 
@@ -3743,14 +4345,17 @@ def read_board_alarms(board_path, overrides=None):
         return []
     _sections, items, _deck = _scan_board(lines)
     out = []
-    for (s, e, _name) in items:
+    for (s, e, name) in items:
+        if name == "明日以降":
+            continue
         blk = "".join(lines[s:e + 1])
         if _CHIP_DONE_RE.search(blk):
             continue
-        disp = _element_text(blk, "time")
+        # 時刻とタイトルは行の鍵と同じ規則で読む（_key_text・v2.14。閉じタグの無い時刻の欄でも、欄そのものの文字だけを読む）
+        disp = _key_text(blk, "time", stop_at_class=True)
         if not disp:
             continue
-        title_raw = _element_text(blk, "task-title") or ""
+        title_raw = _key_text(blk, "task-title") or ""
         if overrides:
             # board.js の taskKey は data-orig（＝HTML の元時刻）で作られるため、
             # 突き合わせは上書き前のキーで行う。
@@ -3847,11 +4452,47 @@ def check_alarms(board_path, store, cache, now=None):
 # - 失敗の扱い: トークン・申告が無い／読めない／一致しない要求は、読み取り（GET）も
 #   書き込み（POST）も 403 で断る。読み取りも断るのは、/notifications・/sound/config・
 #   /board/times が別ユーザーのタスク名・時刻・設定を返してしまうため。トークンと申告を
-#   求めないのは /ping（固定文字列を返すだけ）と OPTIONS（プリフライトへの応答）だけ。
+#   求めないのは /ping（乱数の無い /ping は固定文字列を返す。乱数付きは表示の鍵の証しを添える＝v2.9）と OPTIONS（プリフライトへの応答）だけ。
+# - ボードの表示（v2.9）: Claude デスクトップアプリの内蔵ブラウザは file:// のページを開けないので、
+#   BOARD_VIEW_FILES の経路（/・/board.html・/board.css・/board.js・/cat.png）で板そのものを配る。
+#   配った板のページは Deck と同じオリジン（http://127.0.0.1:<ポート>）になる。守りは次のとおり:
+#   ・Host は上と同じ（127.0.0.1:<自分のポート> だけ。localhost:<自分のポート> は 127.0.0.1 の同じ経路へ
+#     308 で移すだけで中身を返さない）。DNS リバインディングのページは Host がその名前なので配らない。
+#   ・Origin の付いた要求には配らない（値が "null" でも自分のオリジンでも）。ページの読み込み・再読み込み・
+#     <link>・<script> の GET には Origin が付かず、fetch で読もうとするほかのページの要求には付くため
+#     （実測 2026-11-04・ヘッドレスの Chrome 156.0.8078.80・n=1: 配った板の読み込み〔Sec-Fetch-Mode navigate〕・
+#     再読み込み・board.css・board.js〔no-cors〕・同じオリジンの fetch の GET〔cors〕はどれも Origin 無し、
+#     同じオリジンの fetch の POST は Origin: http://127.0.0.1:<ポート>。<img> とほかのオリジンのページの要求は
+#     測っていない＝そちらは Fetch の仕様による）。とくに "null" を通すと、下の CORS の許可（"null"）と組んで
+#     sandbox iframe 等がトークン入りの板を読めてしまう。配る応答には CORS の許可を付けない。
+#   ・board.html は ?v=<表示の鍵> が合うときだけ配る（定数時間で比べる）。鍵は state.json に置き
+#     （board_view_key）、接続情報の data-view に書く。鍵を求めるのは、同じ PC の別の Windows ユーザーも
+#     127.0.0.1 に届くため——鍵が無いと、その人のブラウザから Deck の板（とトークン）を読めてしまい、
+#     v2.1 の「別ユーザーはトークンを知りえない」が崩れる。ただし鍵は URL に入るので、Deck が止まっている間に
+#     別のユーザーのプログラムがそのポートを取ると、そこへ URL を送った時点で鍵が渡る（下の /ping の証しと「限界」）。
+#     静的ファイル 3 つは秘密を持たないので鍵を求めない。
+#   ・/ping の証し: 配った板は、読み直す前に /ping?n=<乱数> を送り、ping_proof（表示の鍵と自分のポートと乱数の
+#     HMAC-SHA256）が合ったときだけ読み直す。ポートを先に取った別のプログラムは固定の文字列 deck-board-mover は
+#     返せても証しは作れないので、自動の読み直しで鍵を送らない。ポートを証しに入れるのは、そのプログラムが
+#     別のポートで動く本物の Deck へ乱数を中継して証しを得る形を止めるため（本物はそのポートの値で作る）。
+#     乱数の無い /ping には従来どおり固定の文字列だけを返す。
+#   ・フレームへの埋め込みを禁じ（frame-ancestors 'none'・X-Frame-Options: DENY）、ほかのオリジンからの
+#     読み込みを禁じ（Cross-Origin-Resource-Policy: same-origin）、保存させない（Cache-Control: no-store）。
+#   ・緩めたのは Origin の検査の 1 点だけ: 読み書きの経路は "null" に加えて Deck 自身のオリジンを通す。
+#     配った板から POST すると、同じオリジンでも Origin: http://127.0.0.1:<ポート> が付くため。
+#     そのオリジンのページは Deck が配る 4 つのファイルだけなので、通すのは配った板からの要求に限られる。
+#     申告も http://127.0.0.1:<自分のポート>/ か /board.html を「自分の板」として受ける（Origin が無いか
+#     自分のオリジンのときだけ）。トークンは従来どおり求める。
 # - 限界: トークンは board.html に平文で書く。board.html を読めるもの——同じ Windows ユーザーの
 #   プロセス、管理者、board.html を読み込む Claude のセッション（today-board スキルの update
 #   モードは board.html 全体を読む）とその記録、artifact モードで発行したボード——はトークンを
-#   知りうる。Deck を再起動すればトークンは替わる。
+#   知りうる。Deck を再起動すればトークンは替わる。表示の鍵（v2.9）も同じく board.html（data-view）と
+#   state.json に平文で入り、知りうるものも同じ（加えて、配った板を開いた URL を記録するもの——ブラウザの
+#   履歴・Claude の内蔵ブラウザの操作の記録）。さらに、Deck が止まっている間に別の Windows ユーザーの
+#   プログラムが同じポートを取っていると、利用者が履歴などから手でその URL を開き直した時点で鍵がそのプログラムへ
+#   渡る（自動の読み直しは上の証しで止まるが、手で開く経路は止められない）。鍵は同じポートで受信している間は
+#   起動し直しても替わらず、前回と違うポートで受信したときと state.json を消したときに替わる——漏れたおそれが
+#   あるときは、Deck を止めて state.json を消してから起動し直す。
 
 
 def board_path_from_url(value):
@@ -3940,6 +4581,7 @@ class _BoardMoveHandler(BaseHTTPRequestHandler):
     board_path = None
     sound_store = None
     token = None  # 起動ごとのトークン（start_move_server が渡す。None なら全要求を断る）
+    view_key = None  # ボードの表示の鍵（v2.9。main がポートの決まった後に入れる〔試験では start_move_server が渡す〕。None なら board.html を配らない）
     server_version = "DeckBoardMover/2.1"
     timeout = 10  # 遅いクライアントがスレッドを掴み続けないように
 
@@ -3972,25 +4614,54 @@ class _BoardMoveHandler(BaseHTTPRequestHandler):
         self._send(403, json.dumps({"ok": False, "error": reason}).encode("utf-8"))
         return False
 
-    def _request_ok(self, method, route):
-        """Host と Origin を確かめる。通れば True。外れたら 403 を返して False。"""
+    def _own_origin(self):
+        """Deck 自身のオリジン（Deck が配った板のページのオリジン・v2.9）。"""
+        return "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def _request_ok(self, method, route, view=False):
+        """Host と Origin を確かめる。通れば True。外れたら 403 を返して False。
+
+        view=True はボードの表示の経路（v2.9）。Origin の付いた要求には、値が何であっても配らない
+        （"null" も自分のオリジンも断る。下の「受信の照合」節）。
+        """
         host = (self.headers.get("Host") or "").strip().lower()
         if host != "127.0.0.1:%d" % self.server.server_address[1]:
             reason = "host not allowed"
         else:
             origin = self.headers.get("Origin")
-            if origin is not None and origin.strip() != "null":
-                reason = "origin not allowed"
-            else:
+            if origin is None:
                 return True
+            origin = origin.strip()
+            if not view and origin in ("null", self._own_origin()):
+                return True
+            reason = "origin not allowed"
         _log_rejected(method, route, reason)
         self._send(403, json.dumps({"ok": False, "error": reason}).encode("utf-8"))
         return False
+
+    def _own_view_claim(self, board_value):
+        """申告が「この Deck が配った板」（http://127.0.0.1:<自分のポート>/ か /board.html）なら True（v2.9）。
+
+        自分のオリジンから来た要求（Origin が無いか自分のオリジン）に限る。Origin: null のページ
+        （file:// や sandbox iframe）がこの形を申告しても受けない。
+        """
+        try:
+            parts = urllib.parse.urlsplit(board_value)
+        except ValueError:
+            return False
+        if parts.scheme.lower() != "http" or parts.netloc.lower() != "127.0.0.1:%d" % self.server.server_address[1]:
+            return False
+        if parts.path not in BOARD_VIEW_CLAIM_PATHS:
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin.strip() == self._own_origin()
 
     def _board_ok(self, method, route, board_value):
         """申告が自分の board.html と一致すれば True。違えば 403 を返して False。"""
         if board_value is None:
             reason = "board required"
+        elif isinstance(board_value, str) and self.board_path is not None and self._own_view_claim(board_value):
+            return True
         else:
             claimed = board_path_from_url(board_value)
             if claimed is None:
@@ -4007,6 +4678,7 @@ class _BoardMoveHandler(BaseHTTPRequestHandler):
         """CORS ヘッダ付きで応答を返す（file:// で開いたボードからの fetch を通す）。
 
         許すオリジンは "null"（file:// のページ）だけ。v2.0 までは "*" だった（v2.1）。
+        Deck が配った板（v2.9）は Deck と同じオリジンなので、CORS の許可を要さない（ここで足さない）。
         """
         try:
             self.send_response(code)
@@ -4033,13 +4705,124 @@ class _BoardMoveHandler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             log("エラー（OPTIONS 応答・継続）: %r" % e)
 
+    def _send_view(self, code, body, ctype):
+        """ボードの表示の応答（v2.9）。CORS の許可は付けない（ほかのオリジンのページに中身を読ませない）。
+
+        no-store: 板は数秒ごとに変わり、トークンも入るので、ブラウザにも途中の何にも残させない。
+        frame-ancestors 'none' / X-Frame-Options: ほかのページの枠に入れさせない（重ねて押させる類いを止める）。
+        Cross-Origin-Resource-Policy: same-origin: ほかのオリジンのページの <img>・<script> 等からは読み込ませない。
+        nosniff: 型を言い当てさせない。no-referrer: 板の中のリンクを開いたときに、この URL を相手へ渡さない。
+        """
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+        except OSError:
+            pass  # クライアント切断等は無視（本体を落とさない）
+
+    def _view_key_ok(self, route):
+        """board.html を配る経路では ?v=<表示の鍵> を確かめる（定数時間）。静的ファイル 3 つには求めない。"""
+        name = BOARD_VIEW_FILES[route][0]
+        if name != "board.html":
+            return True
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        given = (query.get("v") or [None])[0]
+        if not self.view_key:
+            reason = "view unavailable"
+        elif not given:
+            reason = "view key required"
+        elif not hmac.compare_digest(given.encode("utf-8"), self.view_key.encode("utf-8")):
+            reason = "view key mismatch"
+        else:
+            return True
+        _log_rejected("GET", route, reason)
+        self._send_view(403, ("403 %s\nこのボードを開くには、Deck がボードの接続情報に書いた URL"
+                              "（http://127.0.0.1:<ポート>/?v=<表示の鍵>）が要ります。"
+                              "Deck の README「内蔵ブラウザで見るとき（v2.9）」を参照してください。\n"
+                              % reason).encode("utf-8"), "text/plain; charset=utf-8")
+        return False
+
+    def _serve_view(self, route):
+        """BOARD_VIEW_FILES の1つを配る（v2.9）。Host・Origin・表示の鍵の確かめは呼び出し側で済んでいる。"""
+        name, ctype = BOARD_VIEW_FILES[route]
+        if self.board_path is None:
+            self._send_view(404, b"not found", "text/plain; charset=utf-8")
+            return
+        board = os.path.abspath(self.board_path)
+        path = board if name == "board.html" else os.path.join(os.path.dirname(board), name)
+        data = None
+        for attempt in range(BOARD_VIEW_READ_RETRIES):
+            try:
+                with open(path, "rb") as f:
+                    data = f.read(BOARD_VIEW_MAX_BYTES + 1)
+                break
+            except FileNotFoundError:
+                self._send_view(404, b"not found", "text/plain; charset=utf-8")
+                return
+            except OSError:
+                # Deck・board_edit.py が置き換えている最中など。少し待って読み直す
+                if attempt + 1 < BOARD_VIEW_READ_RETRIES:
+                    time.sleep(BOARD_VIEW_READ_RETRY_SEC)
+        if data is None:
+            self._send_view(503, b"busy", "text/plain; charset=utf-8")
+            return
+        if len(data) > BOARD_VIEW_MAX_BYTES:
+            log("ボードの表示: %s が %d バイトを超えるため配りません" % (name, BOARD_VIEW_MAX_BYTES))
+            self._send_view(500, b"too large", "text/plain; charset=utf-8")
+            return
+        self._send_view(200, data, ctype)
+
     def do_GET(self):  # noqa: N802
         try:
             route, board_value = self._split_path()
+            if route in BOARD_VIEW_FILES:
+                if self.path.split("?", 1)[0] != route:
+                    # 要求先がそのまま経路の形でないものは配らない。効くのは絶対形の要求先
+                    # （GET http://127.0.0.1:<ポート>/… ＝urlsplit が名前の部分を外して経路だけを取り出す）。
+                    # 「//名前/…」は Python 3.10 以後の http.server が先頭の // を / に縮める（gh-87389）ので
+                    # 経路の表に当たらず、ここより前に 404 になる
+                    self._send(404, b'{"ok": false, "error": "not found"}')
+                    return
+                # localhost:<自分のポート> で開かれたら、127.0.0.1 の同じ経路へ移す（許す表記は 1 つのまま。
+                # 移す先は自分のオリジンに固定なので、名前を向け直した外部のページ〔Host がその名前〕はここに来ない。
+                # 移すだけで中身は返さない）
+                host = (self.headers.get("Host") or "").strip().lower()
+                if (host == "localhost:%d" % self.server.server_address[1]
+                        and self.headers.get("Origin") is None):
+                    try:
+                        self.send_response(308)
+                        self.send_header("Location", self._own_origin() + self.path)
+                        self.send_header("Content-Length", "0")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Referrer-Policy", "no-referrer")
+                        self.end_headers()
+                    except OSError:
+                        pass
+                    return
+                if not self._request_ok("GET", route, view=True):
+                    return
+                if not self._view_key_ok(route):
+                    return
+                self._serve_view(route)
+                return
             if not self._request_ok("GET", route):
                 return
             if route == "/ping":
-                self._send(200, b"deck-board-mover", "text/plain; charset=utf-8")
+                # ?n=<乱数> が付いていれば、表示の鍵を知る者にしか作れない証しを添える（v2.9。ping_proof）
+                nonce = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("n") or [None])[0]
+                body = "deck-board-mover"
+                if nonce is not None and self.view_key and _PING_NONCE_RE.fullmatch(nonce):
+                    body += " " + ping_proof(self.view_key, self.server.server_address[1], nonce)
+                self._send(200, body.encode("ascii"), "text/plain; charset=utf-8")
                 return
             if route not in ("/sound/config", "/board/times", "/notifications"):
                 self._send(404, b'{"ok": false, "error": "not found"}')
@@ -4116,7 +4899,15 @@ class _BoardMoveHandler(BaseHTTPRequestHandler):
             if not isinstance(before, str):
                 before = None  # null / 欠落は「末尾へ」
             head = bool(data.get("head"))
-            code, msg = apply_move_to_board(self.board_path, k, sec, before, head, deadline=started + MOVE_DEADLINE_SEC)
+            # 今日の側から「明日以降」へ落とした行の実施日（v2.13）。"due" があれば文字列（日付）か null（未定）
+            set_due = "due" in data
+            due = data.get("due")
+            if set_due and due is not None and not isinstance(due, str):
+                log("受信: 不正な due（%s）→ 400" % route)
+                self._send(400, b'{"ok": false, "error": "invalid due"}')
+                return
+            code, msg = apply_move_to_board(self.board_path, k, sec, before, head, deadline=started + MOVE_DEADLINE_SEC,
+                                            due=due, set_due=set_due)
             log("移動受信: k=%r sec=%r → %d (%s)" % (k, sec, code, msg))
             if code == 200:
                 body = b'{"ok": true}'
@@ -4146,7 +4937,7 @@ class _BoardMoveHandler(BaseHTTPRequestHandler):
         self._send(200, body)
 
     def _handle_board_times(self, data):
-        """✎ の時刻上書き（board.js の localStorage `ovr:<日付>` の写し）を受ける。"""
+        """✎ の時刻上書きを受ける（丸ごと置き換え。持ち主は Deck で、board.js は操作の直前に読み直した地図に足して送る）。"""
         if self.sound_store is None:
             self._send(503, b'{"ok": false, "error": "store unavailable"}')
             return
@@ -4185,13 +4976,52 @@ def new_deck_token():
     return secrets.token_urlsafe(32)
 
 
-def deck_key_element(port, token):
-    """DECK:AUTO 領域の先頭に置く、board.js 向けの接続情報（画面には出ない）。"""
-    return ('<span id="deck-key" hidden data-port="%d" data-k="%s"></span>'
-            % (int(port), html.escape(token, quote=True)))
+def deck_key_element(port, token, view_key=None):
+    """DECK:AUTO 領域の先頭に置く、board.js 向けの接続情報（画面には出ない）。
+
+    view_key（v2.9）を渡すと data-view にも書く。ボードを Deck から開く URL
+    （http://127.0.0.1:<ポート>/?v=<表示の鍵>）を、利用者と Claude がここから組み立てる。
+    """
+    view = (' data-view="%s"' % html.escape(view_key, quote=True)) if view_key else ""
+    return ('<span id="deck-key" hidden data-port="%d" data-k="%s"%s></span>'
+            % (int(port), html.escape(token, quote=True), view))
 
 
-def start_move_server(board_path, sound_store=None, port=None, token=None):
+_VIEW_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_PING_NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+
+
+def board_view_key(state, port=None):
+    """ボードの表示の鍵（v2.9）。state（deck/state.json）の "view_key" を使い、無い・形が違えば作って state に入れる。
+
+    トークンと違って起動ごとには替えない——開いたままの表示（内蔵ブラウザのタブ等）が、Deck を起動し直した後の
+    読み直しでも開けるようにするため。ただし port を渡したとき、前回の鍵を作ったポート（"view_key_port"）と違えば
+    作り直す——前回のポートは別のプログラムに取られていたかもしれず（そこへ URL を送ると鍵が渡る）、開いたままの
+    表示はポートが替わると元々追従できないので、替えても失うものが無いため。
+    state.json を消す（または版数が替わって作り直される）と鍵も替わる。
+    """
+    st = state if isinstance(state, dict) else {}
+    key = st.get("view_key")
+    same_port = port is None or st.get("view_key_port") == port
+    if isinstance(key, str) and _VIEW_KEY_RE.fullmatch(key) and same_port:
+        return key
+    key = secrets.token_urlsafe(32)
+    st["view_key"] = key
+    if port is not None:
+        st["view_key_port"] = port
+    return key
+
+
+def ping_proof(view_key, port, nonce):
+    """GET /ping?n=<乱数> に添える証し（v2.9）。HMAC-SHA256(表示の鍵, "today-board-ping:<ポート>:<乱数>") の16進。
+
+    board.js は自分のページの URL の ?v= と location.port で同じ値を作って比べ、合ったときだけ読み直す。
+    """
+    msg = ("today-board-ping:%d:%s" % (int(port), nonce)).encode("utf-8")
+    return hmac.new(view_key.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def start_move_server(board_path, sound_store=None, port=None, token=None, view_key=None):
     """受信サーバをデーモンスレッドで起動する。全ポートでバインド失敗なら None（監視は継続）。
 
     port を省くと BOARD_MOVE_PORT から BOARD_PORT_COUNT 個を順に試し、最初に取れたもので
@@ -4199,7 +5029,8 @@ def start_move_server(board_path, sound_store=None, port=None, token=None):
     port を渡したときはそのポートだけを試す（テスト用）。
     """
     handler = type("DeckBoardMoveHandler", (_BoardMoveHandler,),
-                   {"board_path": board_path, "sound_store": sound_store, "token": token})
+                   {"board_path": board_path, "sound_store": sound_store, "token": token,
+                    "view_key": view_key})
     if port is None:
         ports = list(range(BOARD_MOVE_PORT, BOARD_MOVE_PORT + BOARD_PORT_COUNT))
     else:
@@ -4217,7 +5048,7 @@ def start_move_server(board_path, sound_store=None, port=None, token=None):
         if failures:
             log("受信ポート %s は使用中のため %d で受信します" % (
                 "・".join(f.split(":", 1)[0] for f in failures), p))
-        log("受信サーバ起動: http://127.0.0.1:%d/ (board/move・sound/config, board=%s)"
+        log("受信サーバ起動: http://127.0.0.1:%d/ (ボードの表示・board/move・sound/config, board=%s)"
             % (p, board_path))
         return server
     log("警告: 受信ポート %d〜%d をすべてバインドできません（ボードD&D反映・通知音の設定・"
@@ -4439,8 +5270,15 @@ def main(argv):
     sound_store = SoundStore(sound_state_path(board_path, is_default_board))
     token = new_deck_token()  # 起動ごと。ログにもファイルにも board.html 以外には書かない
     move_server = start_move_server(board_path, sound_store, token=token)
-    deck_key = (deck_key_element(move_server.server_address[1], token)
-                if move_server is not None else None)
+    deck_key = None
+    if move_server is not None:
+        # ボードの表示の鍵（v2.9）。state.json に置いて起動をまたいで使い、前回と違うポートで受信したら替える
+        # （board_view_key）。ポートが決まってから作り、受信の処理へ渡す（渡すまでは board.html を配らない）。ログには書かない
+        port = move_server.server_address[1]
+        view_key = board_view_key(state, port)
+        save_state(state, state_path)
+        move_server.RequestHandlerClass.view_key = view_key
+        deck_key = deck_key_element(port, token, view_key)
     try:
         watch_loop(projects_dir, board_path, state, state_path, sound_store, deck_key, assets_dir)
     except KeyboardInterrupt:

@@ -101,6 +101,34 @@ class Sandbox(unittest.TestCase):
         with open(self.board, "wb") as f:
             f.write(data)
 
+    def put_legacy_early(self, title, due):
+        """タイトル title の今日の側の行を、v1.8・Deck v2.12 までに先の日の行を前もって今日の側へ動かした形にする（サンドボックスの板だけ）。
+
+        実施日を due（先の日）に戻し、一度移した印と元の実施日を外す。v1.9・v2.13 の move・D&D は先の日の行も今日の行にするので、
+        この形はそれらの操作では作れない。"""
+        self.put_legacy_due(title, due)
+        lines = self.text().splitlines(keepends=True)
+        _secs, items = be.layout(lines)
+        s = [x for x in items if be._element_text("".join(lines[x["s"]:x["e"] + 1]), "task-title") == title][0]["s"]
+        lines[s] = re.sub(r'\sdata-due-(?:moved|from)="[^"]*"', "", lines[s])
+        self.write("".join(lines))
+
+    def put_legacy_due(self, title, due, time=None):
+        """タイトル title の行の data-due を due に書き換える（サンドボックスの板だけ）。
+
+        v1.6 までの操作（今日の側で set-time してから「明日以降」へ戻す等）でできた、時刻の欄と実施日の時刻が違う行を作る。
+        v1.7 の set-time・set-due・add・create は時刻の欄と実施日の時刻を同じ値にするので、この形はそれらの操作では作れない。time を渡すと、時刻の欄がその文字の行だけを見る。"""
+        lines = self.text().splitlines(keepends=True)
+        _secs, items = be.layout(lines)
+        hits = [x for x in items if be._element_text("".join(lines[x["s"]:x["e"] + 1]), "task-title") == title
+                and (time is None or (be._element_text("".join(lines[x["s"]:x["e"] + 1]), "time") or "").strip() == time)]
+        self.assertEqual(len(hits), 1, hits)
+        s = hits[0]["s"]
+        new, n = re.subn(r'(\sdata-due=")[^"]*(")', lambda m: m.group(1) + due + m.group(2), lines[s], count=1)
+        self.assertEqual(n, 1, lines[s])
+        lines[s] = new
+        self.write("".join(lines))
+
     def status(self):
         rc, out = self.ed("status")
         self.assertEqual(rc, 0)
@@ -276,7 +304,7 @@ class TestOps(Sandbox):
         self.assertEqual(rc, 0, out)
         names = [i["title"] for i in self.items() if i["section"] == "今日の予定"]
         self.assertEqual(names, ["朝会", "作業B", "判断する"])
-        rc, out = self.ed("move", "--item", "作業B", "--section", "明日以降", "--head")
+        rc, out = self.ed("move", "--item", "作業B", "--section", "明日以降", "--head", "--due", "none")
         self.assertEqual(rc, 0)
         self.assertEqual([i["title"] for i in self.items() if i["section"] == "明日以降"], ["作業B", "来週の件"])
         before = self.read()
@@ -747,14 +775,17 @@ class TestImportantTasks(Sandbox):
 
 # ------------------------------------------------------------------ T-P（Deck との写しの一致）
 
-COPIED = ["_blank_comments", "_canon_section", "_scan_board", "_element_text", "_item_key", "_recalc_progress",
+COPIED = ["_blank_comments", "_canon_section", "_scan_board", "_element_text", "_key_text", "_item_key", "_recalc_progress",
           "_toggle_class_token", "_normalize_item_block", "board_header_date_text", "parse_board_date",
           "_marker_counts", "_item_start_lines", "board_structure_ok", "_canon_label", "_remove_time_elements",
-          "_div_balance", "hand_fingerprint"]
+          "_div_balance", "hand_fingerprint", "parse_due_value", "_item_open_attr", "_item_due_pending", "_mark_due_moved",
+          "_insert_status_chip", "_due_moved_shape", "_item_due_shapeable", "_valid_hm", "_later_due_shape",
+          "_time_open_unclosed", "_time_close_at", "_implied_close",
+          "_open_stack", "_time_range", "_time_text"]
 COPIED_CONSTS = ["MARKER_START", "MARKER_END", "MOVABLE_SECTIONS", "CANON_SECTIONS", "WEEKDAY_JA", "_SECTION_LABEL_RE",
                  "_CLASS_TAG_RE", "_STRIP_TAGS_RE", "_CHIP_TOKEN_RE", "_CHIP_DONE_RE", "_ITEM_CLASS_RE",
                  "_ANY_CLASS_TAG_RE", "_HEADER_RE", "_TITLE_RE", "_UPD_TIME_RE", "_ITEM_OPEN_RE", "_TIME_OPEN_RE",
-                 "_FOOTER_LINE_RE"]
+                 "_FOOTER_LINE_RE", "_DUE_VALUE_RE", "_SPAN_CLASS_RE", "_KEY_STOP_RE", "_ROW_PART_RE", "_TAG_TOKEN_RE", "_VOID_TAGS", "_P_CLOSERS"]
 # 書き込みの記録（.guard/）の節。Deck v2.6 が board_edit.py から写したもの
 GUARD_COPIED = ["_guard_atomic_write", "guard_format_ok", "guard_write_record", "guard_remove_record",
                 "guard_prune_records"]
@@ -882,7 +913,8 @@ class TestRestore(Sandbox):
                 self.assertIn("後から足した行", [x["title"] for x in out["diff"]["only_now"]])
                 if kind == "lastgood" and not suffix:   # 1回目だけ、作業B のチップの違いも差に出る
                     self.assertEqual(out["diff"]["only_restore"], [{"section": "今日中", "time": None, "title": "作業B", "note": None,
-                                                                    "chip": "pending", "crit": False, "carried": None}])
+                                                                    "chip": "pending", "crit": False, "carried": None, "due": None, "due_moved": None,
+                                                                    "due_from": None}])
                 self.assertUnchanged(cur)
                 rc, out = self.ed("restore", "--from", name, "--confirmed")
                 self.assertEqual(rc, 0, out)
@@ -930,7 +962,7 @@ class TestRestore(Sandbox):
         self.assertNotIn(os.path.basename(outside), [os.path.basename(x) for x in self.status()["restorable"]])
 
     def test_restore_diff_from_broken_board(self):
-        """崩れた板でも、崩れより後ろの行が only_now から抜けない（M1）。"""
+        """崩れた板でも、崩れより後ろの行が only_now から抜けない。"""
         rel = self.hist("board-%s-lastgood-120000.html" % self.iso, self.good)
         self.write(self.text().replace('<div class="section-label">今日中</div>\n',
                                        '<div class="section-label">今日中</div>\n' + NESTED))
@@ -953,7 +985,7 @@ class TestRestore(Sandbox):
         self.assertIn(rel, self.status()["restorable"])
 
     def test_restore_source_not_utf8(self):
-        """戻す版が読めないときは、いまの板ではなく戻す版のことを言う（N2）。"""
+        """戻す版が読めないときは、いまの板ではなく戻す版のことを言う。"""
         good = self.hist("board-%s-lastgood-110000.html" % self.iso, self.good)
         rel = self.hist("board-%s-lastgood-120000.html" % self.iso, self.good + b"\xff")
         cur = self.read()
@@ -982,7 +1014,7 @@ class TestRestore(Sandbox):
         rc, out = self.ed("restore", "--from", rel)
         self.assertFalse(out["diff"]["only_now_incomplete"])
         x = [e for e in out["diff"]["only_now"] if e["title"] == "後から足した行"][0]
-        self.assertEqual(set(x), {"section", "time", "title", "note", "chip", "crit", "carried"})
+        self.assertEqual(set(x), {"section", "time", "title", "note", "chip", "crit", "carried", "due", "due_moved", "due_from"})
 
 
 # ------------------------------------------------------------------ create の退避と、消える行の確かめ
@@ -993,6 +1025,140 @@ class TestCreateGuard(Sandbox):
         with open(p, "w", encoding="utf-8") as f:
             json.dump(spec, f, ensure_ascii=False)
         return p
+
+    def make_afternoon_row(self, title="午後の件"):
+        self.ed("add", "--section", "今日中", "--title", title, "--time", "15:00")
+        self.write(self.text().replace('<div class="time">15:00</div>', '<div class="time">午後</div>', 1))
+        self.assertIn("午後", [i["time"] for i in self.status()["sections"][1]["items"] if i["title"] == title])
+
+    def test_missing_rows_do_not_compare_non_hm_time(self):
+        """時刻の欄が H:MM でない行（「午後」）は、spec に time なしで入れれば消える行に出ないが、時刻が消えるので
+        --confirmed が無ければ書かずに dropped_times を返す。--confirmed を付ければ書き、書いた後の出力にも dropped_times を出す。"""
+        self.create()
+        self.make_afternoon_row()
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(SPEC)])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([r["title"] for r in out["missing"]], ["午後の件"])       # spec に無ければ消える行に出る
+        self.assertEqual(out["dropped_times"], [])                                 # spec に無い行は missing の側だけ
+        spec2 = json.loads(json.dumps(SPEC))
+        spec2["items"].append({"section": "今日中", "title": "午後の件"})
+        before = self.read()
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2)])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out["missing"], [])
+        self.assertEqual(out["dropped_times"], [{"no": 1, "status_index": 5, "section": "今日中", "time": "午後", "new_time": None,
+                                                 "title": "午後の件", "due": None}])
+        self.assertIn("dropped_times", out["error"])
+        self.assertIn("--confirmed", out["error"])
+        self.assertUnchanged(before)
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2), "--confirmed"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["removed"], [])
+        self.assertEqual([(r["title"], r["time"]) for r in out["dropped_times"]], [("午後の件", "午後")])
+        self.assertNotIn("午後</div>", self.text())
+
+    def test_non_hm_time_replaced_by_hm_is_same_row(self):
+        """H:MM でない時刻を H:MM で spec に入れたら、同じ行とみなす（消える行に出ない）。ただし時刻が変わるので、
+        --confirmed が無ければ書かずに dropped_times（new_time にその時刻）を返す。--confirmed を付ければ書き、書いた後も出す。"""
+        self.create()
+        self.make_afternoon_row()
+        spec2 = json.loads(json.dumps(SPEC))
+        spec2["items"].append({"section": "今日中", "title": "午後の件", "time": "13:30"})
+        before = self.read()
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2)])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out["missing"], [])
+        self.assertEqual(out["dropped_times"], [{"no": 1, "status_index": 5, "section": "今日中", "time": "午後", "new_time": "13:30",
+                                                 "title": "午後の件", "due": None}])
+        self.assertUnchanged(before)
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2), "--confirmed"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["removed"], [])
+        self.assertEqual([(r["time"], r["new_time"]) for r in out["dropped_times"]], [("午後", "13:30")])
+        self.assertIn('<div class="time">13:30</div>', self.text())
+
+    def test_non_hm_time_does_not_take_other_rows_pair(self):
+        """同じタイトルの、時刻の無い行と「午後」の行があるとき、時刻の無い行は spec の時刻の無い行と、「午後」の行は残りの行と組になる。"""
+        self.create()
+        self.make_afternoon_row("同じ名前")                                       # 「午後」の行が先に並ぶ
+        self.ed("add", "--section", "今日中", "--title", "同じ名前")
+        self.assertEqual([i["time"] for i in self.status()["sections"][1]["items"] if i["title"] == "同じ名前"], ["午後", None])
+        spec2 = json.loads(json.dumps(SPEC))
+        spec2["items"] += [{"section": "今日中", "title": "同じ名前", "time": "13:30"}, {"section": "今日中", "title": "同じ名前"}]
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2)])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out["missing"], [])                                       # 時刻の無い行は時刻の無い spec の行と組になる
+        self.assertEqual([(r["time"], r["new_time"]) for r in out["dropped_times"]], [("午後", "13:30")])
+
+    def test_non_hm_time_pairs_with_no_time_row_first(self):
+        """板に「午後 X」が1行、spec に「X 13:30」と「X（時刻なし）」があれば、時刻の無い行と組になる（new_time は None）。"""
+        self.create()
+        self.make_afternoon_row("同じ名前")
+        spec2 = json.loads(json.dumps(SPEC))
+        spec2["items"] += [{"section": "今日中", "title": "同じ名前", "time": "13:30"}, {"section": "今日中", "title": "同じ名前"}]
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2)])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out["missing"], [])
+        self.assertEqual([(r["time"], r["new_time"]) for r in out["dropped_times"]], [("午後", None)])
+
+    def test_dropped_times_on_unreadable_date_board(self):
+        """ヘッダの日付が読めない板でも、「午後」の行を時刻なしで spec に入れたら書かずに dropped_times を返し、--confirmed で書く。"""
+        self.create()
+        self.make_afternoon_row()
+        self.write(self.text().replace(be.fmt_full_date(date.today()), "そのうち", 1))
+        spec2 = json.loads(json.dumps(SPEC))
+        spec2["items"].append({"section": "今日中", "title": "午後の件"})
+        before = self.read()
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2)])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out["missing"], [])
+        self.assertEqual(len(out["dropped_times"]), 1)
+        self.assertUnchanged(before)
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2), "--confirmed"])
+        self.assertEqual(rc, 0, out)
+
+    def test_missing_and_dropped_together(self):
+        """消える行と時刻が消える行が両方あれば、1回の拒否で両方を返す（ユーザーへの確かめを1回で済ませる）。"""
+        self.create()
+        self.make_afternoon_row()
+        self.ed("add", "--section", "今日中", "--title", "他のセッションの行")
+        spec2 = json.loads(json.dumps(SPEC))
+        spec2["items"].append({"section": "今日中", "title": "午後の件"})
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2)])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([r["title"] for r in out["missing"]], ["他のセッションの行"])
+        self.assertEqual([r["title"] for r in out["dropped_times"]], ["午後の件"])
+        self.assertIn("dropped_times", out["error"])
+
+    def test_dropped_times_reported_for_rolled_board(self):
+        """Deck が引き継いだ板・前の日の板は確かめずに書くが、時刻が消えた行は出力の dropped_times に出す。板が無ければ空。"""
+        self.create()
+        self.make_afternoon_row()
+        self.write(self.text().replace('<div class="board">', '<div class="board" data-tb-rolled="2026-10-28">', 1))
+        spec2 = json.loads(json.dumps(SPEC))
+        spec2["items"].append({"section": "今日中", "title": "午後の件"})
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2)])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([(r["title"], r["time"]) for r in out["dropped_times"]], [("午後の件", "午後")])
+        os.remove(self.board)
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(SPEC)])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["dropped_times"], [])
+
+    def test_missing_rows_do_not_compare_unreadable_due(self):
+        """「明日以降」の行の data-due が読めない値（「そのうち」）なら、spec に同じ見出し・時刻・タイトルの行（due 無し）があれば消える行に出ない。"""
+        self.create()
+        self.ed("add", "--section", "明日以降", "--title", "そのうちの件", "--due", date.fromordinal(date.today().toordinal() + 3).isoformat())
+        self.write(re.sub(r'data-due="[^"]*"(>\s*<div>\s*<p class="task-title">そのうちの件)', r'data-due="そのうち"\1', self.text(), count=1))
+        self.assertIn('data-due="そのうち"', self.text())
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(SPEC)])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([r["title"] for r in out["missing"]], ["そのうちの件"])
+        spec2 = json.loads(json.dumps(SPEC))
+        spec2["items"].append({"section": "明日以降", "title": "そのうちの件"})
+        rc, out = run(["create", "--board", self.board, "--spec", self.spec_file(spec2)])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["removed"], [])
 
     def test_backup_before_create(self):
         self.create()
@@ -1012,7 +1178,8 @@ class TestCreateGuard(Sandbox):
         rc, out = run(["create", "--board", self.board, "--spec", p])
         self.assertEqual(rc, 1)
         self.assertEqual(out["missing"], [{"no": 1, "status_index": 5, "section": "今日中", "time": None,
-                                           "title": "他のセッションの行", "chip": "pending", "note": "proj"}])
+                                           "title": "他のセッションの行", "chip": "pending", "note": "proj",
+                                           "crit": False, "due": None, "due_moved": None, "due_from": None}])
         self.assertFalse(out["missing_incomplete"])
         self.assertNotIn("missing_incomplete）", out["error"])
         self.assertIn("まだ作り直していません", out["error"])
@@ -1078,7 +1245,7 @@ class TestCreateGuard(Sandbox):
         self.assertEqual(self.records(), recs)
 
     def test_backup_name_taken_just_before_write(self):
-        """退避の名前は書く段で排他的に決める。直前に同名のファイルが置かれても上書きしない（N3）。"""
+        """退避の名前は書く段で排他的に決める。直前に同名のファイルが置かれても上書きしない。"""
         self.create()
         self.write(re.sub(r'(<span id="upd-time">)[^<]*', r"\g<1>1:23", self.text(), count=1))
         planted = {}
@@ -1133,7 +1300,7 @@ class TestCreateGuard(Sandbox):
             self.assertIn("後で足した", f.read())
 
     def test_unreadable_board_removed_is_null(self):
-        """いまの板が UTF-8 で読めないときの create は removed: null・removed_incomplete: true（R2）。"""
+        """いまの板が UTF-8 で読めないときの create は removed: null・removed_incomplete: true。"""
         self.create()
         self.write(self.read() + b"\xff")
         out = self.create(SPEC, "--confirmed")
@@ -1141,7 +1308,7 @@ class TestCreateGuard(Sandbox):
         self.assertTrue(out["removed_incomplete"])
 
     def test_create_replace_fails_after_backup(self):
-        """退避の後に置き換えが失敗したら、退避・記録・一時ファイルを残さず、板も変えない（W1）。"""
+        """退避の後に置き換えが失敗したら、退避・記録・一時ファイルを残さず、板も変えない。"""
         self.create()
         self.ed("add", "--section", "今日中", "--title", "大事")
         before = self.read()
@@ -1162,7 +1329,7 @@ class TestCreateGuard(Sandbox):
         self.assertEqual([n for n in os.listdir(self.dir) if n.endswith(".tmp")], [])
 
     def test_create_retry_after_intruder(self):
-        """読み直しで割り込みを見つけてやり直したら、1回目の退避を消し、2回目の退避は割り込んだ版を持つ（W2）。"""
+        """読み直しで割り込みを見つけてやり直したら、1回目の退避を消し、2回目の退避は割り込んだ版を持つ。"""
         self.create()
         self.ed("add", "--section", "今日中", "--title", "大事")
         calls = []
@@ -1184,7 +1351,7 @@ class TestCreateGuard(Sandbox):
         self.assertEqual(sorted(r["title"] for r in out["removed"]), ["作業B改", "大事"])
 
     def test_create_on_unreadable_board_needs_confirmed(self):
-        """UTF-8 として読めない板には、--confirmed が無ければ create も書かない（P3）。"""
+        """UTF-8 として読めない板には、--confirmed が無ければ create も書かない。"""
         self.create()
         self.write(self.read() + b"\xff")
         before = self.read()
@@ -1199,13 +1366,13 @@ class TestCreateGuard(Sandbox):
         self.assertFalse(os.path.isdir(os.path.join(self.dir, "history")))
 
     def test_write_tmp_failure_leaves_no_tmp(self):
-        """一時ファイルへの書き込みが失敗したら、一時ファイルを残さない（P1）。"""
+        """一時ファイルへの書き込みが失敗したら、一時ファイルを残さない。"""
         with self.assertRaises(TypeError):
             be._write_tmp(self.dir, "bytes ではない")
         self.assertEqual([n for n in os.listdir(self.dir) if n.endswith(".tmp")], [])
 
     def test_history_xb_failure_removes_own_file(self):
-        """os.link が使えず xb で書く経路で、書く途中に失敗したら、自分が作ったファイルだけを消す（P2）。"""
+        """os.link が使えず xb で書く経路で、書く途中に失敗したら、自分が作ったファイルだけを消す。"""
         h = os.path.join(self.dir, "history")
         os.makedirs(h)
         other = os.path.join(h, "board-x.html")
@@ -1474,6 +1641,292 @@ class TestGuardRecords(Sandbox):
         self.assertEqual(len(js), 1)
         with open(os.path.join(adir, js[0]), encoding="utf-8") as f:
             self.assertIsNone(json.load(f)["base_fp"])
+
+
+# ------------------------------------------------------------------ T-B（閉じタグの無い時刻の欄・v1.10 / Deck v2.14）
+
+# 閉じタグの無い時刻の欄の形（ブラウザは後ろの要素を欄の中に取り込む）。どれも鍵は「0:00|タイトル」（tests/test_board_browser.py の
+# TestBrokenTimeKeys が board.js の鍵と同じであることを見る）。v2.13 までの Deck は、最初の </span> までの文字を時刻にしていた
+BROKEN_SHAPES = {
+    "補足つき": '<div class="item"><span class="time">0:00<div><p class="task-title">補足つき</p><p class="task-note">メモ</p>'
+            '<div class="chips"><span class="chip pending">未</span></div></div></div>',
+    "span題": '<div class="item"><span class="time">0:00<div><span class="task-title strike">span題</span>'
+             '<div class="chips"><span class="chip pending">未</span></div></div></div>',
+    "二つ": '<div class="item crit"><span class="time">0:00<div><p class="task-title">二つ</p>'
+          '<div class="chips"><span class="chip pending">未</span><span class="chip crit">重要</span></div></div></div>',
+    "崩れ": '<div class="item"><span class="time">0:00<div><p class="task-title">崩れ</p>'
+          '<div class="chips"><span class="chip pending">未</span></div></div></div>',
+    "複数行": '<div class="item"><span class="time">0:00\n  <div>\n    <p class="task-title">複数行</p>\n'
+           '    <div class="chips"><span class="chip pending">未</span></div>\n  </div>\n</div>',
+}
+
+
+class TestBrokenTimeKey(Sandbox):
+    def put_rows(self, rows, nl="\n"):
+        """今日中の見出しの直後に rows（HTML の行）を足す（サンドボックスの板だけ。board_edit.py では作れない形）。"""
+        lines = self.text().splitlines(keepends=True)
+        at = [i for i, ln in enumerate(lines) if 'class="section-label"' in ln and ">今日中<" in ln][0] + 1
+        lines[at:at] = [r.replace("\n", nl) + nl for r in rows]
+        self.write("".join(lines))
+
+    def test_keys_same_in_deck_and_board_edit(self):
+        """どの形でも、Deck と board_edit.py の鍵は「0:00|タイトル」で同じ（CR LF の板でも）。read_board_alarms の鍵も同じ。"""
+        for nl in ("\n", "\r\n"):
+            for title, row in BROKEN_SHAPES.items():
+                block = row.replace("\n", nl) + nl
+                with self.subTest(title=title, nl=repr(nl)):
+                    self.assertEqual(dw._item_key(block), "0:00|" + title)
+                    self.assertEqual(be._item_key(block), "0:00|" + title)
+                    self.assertTrue(be._time_unclosed(block))
+        self.create()
+        self.put_rows(list(BROKEN_SHAPES.values()), nl="\r\n")
+        alarms = [a[0] for a in dw.read_board_alarms(self.board) if a[3] in BROKEN_SHAPES]
+        self.assertEqual(sorted(alarms), sorted("0:00|" + t for t in BROKEN_SHAPES))
+
+    def test_wellformed_keys_unchanged(self):
+        """閉じタグのある行の鍵は v2.13 までと同じ（時刻の欄の中に class を持つ要素が無く、欄の文字の後ろに空白の無い形）。"""
+        rows = ['<div class="item"><div class="time">9:00</div><div><p class="task-title">朝会</p></div></div>',
+                '<div class="item"><span class="time">9:00</span><div><p class="task-title">D&amp;D の件</p></div></div>',
+                '<div class="item"><div class="time"><div>9:00</div></div><div><p class="task-title">入れ子</p></div></div>',
+                '<div class="item flat"><div><p class="task-title">時刻なし</p></div></div>',
+                '<div class="item"><div class="time">午後</div><div><p class="task-title">読めない</p></div></div>']
+        for row in rows:
+            old = ((be._element_text(row, "time") or "") + "|" + (be._element_text(row, "task-title") or "")).strip()
+            self.assertEqual(be._item_key(row), old)
+            self.assertEqual(dw._item_key(row), old)
+            self.assertFalse(be._time_unclosed(row))
+        # class の無い同じ名前の子が先に閉じる欄は、中に class を持つ要素があっても K15 に当たらない（board.js の⑥も数えない）
+        self.assertFalse(be._time_unclosed('<div class="item"><span class="time"><span>9</span>:00 <span class="x">a</span></span>'
+                                           '<div><p class="task-title">T</p></div></div>'))
+
+    def test_status_warns_and_close_time_repairs(self):
+        """status は閉じタグの無い欄を K15 で知らせ、time は欄の文字だけを出す。close-time は閉じタグを補い、鍵も文言も変えない。"""
+        self.create()
+        self.put_rows(list(BROKEN_SHAPES.values()), nl="\r\n")
+        st = self.status()
+        k15 = [w for w in st["warnings"] if w["code"] == "K15"]
+        self.assertEqual(len(k15), 1, st["warnings"])
+        for title in BROKEN_SHAPES:
+            self.assertIn("0:00|" + title, k15[0]["message"])
+        its = {i["title"]: i for i in self.items()}
+        for title in BROKEN_SHAPES:
+            self.assertEqual((its[title]["time"], its[title]["key"]), ("0:00", "0:00|" + title))
+        # set-time は閉じタグの無い欄を書き換えない（中に入ったタイトルとチップが消えるため）
+        before = self.read()
+        rc, out = self.ed("set-time", "--item", "0:00|崩れ", "--time", "9:00")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("close-time", out["error"])
+        self.assertUnchanged(before)
+        for title in BROKEN_SHAPES:
+            rc, out = self.ed("close-time", "--item", "0:00|" + title)
+            self.assertEqual(rc, 0, out)
+            self.assertTrue(out["changed"])
+        text = self.text()
+        self.assertEqual(be.structure_errors(text), [])
+        st = self.status()
+        self.assertEqual([w for w in st["warnings"] if w["code"] == "K15"], [])
+        its2 = {i["title"]: i for i in self.items()}
+        for title in BROKEN_SHAPES:
+            a, b = dict(its[title]), dict(its2[title])
+            a.pop("index"), b.pop("index")
+            self.assertEqual(a, b)                    # 鍵・時刻・補足・チップ・重要は変わらない
+        self.assertEqual(text.count('<span class="time">0:00</span>'), len(BROKEN_SHAPES))
+        self.assertIn('<span class="time">0:00</span>\r\n  <div>', text)   # 複数行の行は時刻の文字の直後に補う
+        # 直した後は、もう直すものが無い
+        before = self.read()
+        rc, out = self.ed("close-time", "--item", "0:00|崩れ")
+        self.assertNotEqual(rc, 0)
+        self.assertUnchanged(before)
+        self.assertEqual(self.ed("set-time", "--item", "0:00|崩れ", "--time", "9:00")[0], 0)   # 閉じた欄は書き換えられる
+
+    def test_unclosed_second_time_and_single_line(self):
+        """時刻の欄が2つある行の2つ目が閉じていなくても K15 に出る（board.js の⑥と同じく項目ごとに1件）。div を挟まない形
+        （v1.9 の set-time がタイトルを消した形）も set-time は断り、close-time は直す。"""
+        self.create()
+        self.put_rows(['<div class="item"><span class="time">9:00</span><span class="time">9:30<div><p class="task-title">二つの時刻</p>'
+                       '<div class="chips"><span class="chip pending">未</span></div></div></div>',
+                       '<div class="item"><span class="time">0:00 <span class="task-title">単一</span></div>'])
+        k15 = [w for w in self.status()["warnings"] if w["code"] == "K15"]
+        self.assertEqual(len(k15), 1)
+        self.assertIn("9:00|二つの時刻", k15[0]["message"])
+        self.assertIn("0:00|単一", k15[0]["message"])
+        before = self.read()
+        rc, out = self.ed("set-time", "--item", "単一", "--time", "9:00")
+        self.assertNotEqual(rc, 0)
+        self.assertUnchanged(before)
+        self.assertEqual(self.ed("close-time", "--item", "単一")[0], 0)
+        self.assertIn('<span class="time">0:00</span> <span class="task-title">単一</span>', self.text())
+        self.assertEqual(self.ed("close-time", "--item", "二つの時刻")[0], 0)
+        self.assertIn('<span class="time">9:30</span><div><p class="task-title">二つの時刻</p>', self.text())
+        self.assertEqual([w for w in self.status()["warnings"] if w["code"] == "K15"], [])
+
+    def test_rollover_closes_unclosed_time(self):
+        """今日の予定の未完了の行の時刻の欄が閉じていなくても、補える形なら Deck の日付の切り替えは閉じタグを補ってから引き継ぐ
+        （v2.14。v2.13 までは RolloverError で止まった）。補えない形で、外すと行の部品が一緒に消える欄・終わりの決まらない欄は止める。"""
+        from datetime import timedelta
+        self.create()
+        text = self.text()
+        self.assertEqual(text.count('<div class="time">9:00</div>'), 1)
+        ok = text.replace('<div class="time">9:00</div>', '<div class="time">9:00', 1).replace(
+            '<div class="time">9:00', '<span class="time">9:00', 1)
+        self.assertEqual(be.structure_errors(ok), [])
+        rolled, info = dw.roll_board_text(ok, date.today() + timedelta(days=1), "00:00")
+        self.assertEqual(be.structure_errors(rolled), [])
+        lines = rolled.splitlines(keepends=True)
+        blk = [("".join(lines[s:e + 1]), n) for (s, e, n) in dw._scan_board(lines)[1]
+               if dw._element_text("".join(lines[s:e + 1]), "task-title") == "朝会"]
+        self.assertEqual(len(blk), 1)
+        self.assertEqual(blk[0][1], "今日中")
+        self.assertNotIn('class="time"', blk[0][0])
+        self.assertIn('data-orig-time="9:00"', blk[0][0])
+        self.assertIn("毎朝", blk[0][0])                       # 補足も残る
+        bad = text.replace('<div class="time">9:00</div>', '<span class="time">9:00 <b>am</b>', 1)
+        with self.assertRaises(dw.RolloverError):
+            dw.roll_board_text(bad, date.today() + timedelta(days=1), "00:00")
+        # 閉じタグが項目の終わりに置かれた形（外すとタイトル・補足・チップが一緒に消える）は外さずに止める（v2.13 と v2.14 の最初の版は消した）
+        wrap = self.wrap_at_item_end(text, "朝会")
+        self.assertEqual(be.structure_errors(wrap), [])
+        with self.assertRaises(dw.RolloverError):
+            dw.roll_board_text(wrap, date.today() + timedelta(days=1), "00:00")
+        # 閉じタグのある欄の中に class を持つ要素があるだけの形は、これまでどおり引き継ぐ（欄の文字は data-orig-time に残る）
+        child = text.replace('<div class="time">9:00</div>', '<span class="time">9:00<span class="x">a</span></span>', 1)
+        rolled, _info = dw.roll_board_text(child, date.today() + timedelta(days=1), "00:00")
+        lines = rolled.splitlines(keepends=True)
+        blk = ["".join(lines[s:e + 1]) for (s, e, n) in dw._scan_board(lines)[1]
+               if dw._element_text("".join(lines[s:e + 1]), "task-title") == "朝会"]
+        self.assertEqual(len(blk), 1)
+        self.assertIn("毎朝", blk[0])
+        self.assertIn('data-orig-time="9:00"', blk[0])      # 欄の時刻は鍵と同じ読み方（_time_text・v2.15。v2.14 までは「9:00a」）
+
+    def test_rollover_part_child_and_stuck_later_row(self):
+        """閉じタグのある欄でも、中に部品の class の要素（チップ）がある今日の予定の行は外さずに止める。実施日の来た「明日以降」の行で
+        欄を外せない形は、切り替えを止めずにその場に残し、board_edit.py の K13 がその行を名指す（「次の切り替えで移ります」に当たらない）。"""
+        from datetime import timedelta
+        self.create()
+        text = self.text()
+        chip = text.replace('<div class="time">9:00</div>', '<span class="time">9:00<span class="chip">x</span></span>', 1)
+        with self.assertRaises(dw.RolloverError):
+            dw.roll_board_text(chip, date.today() + timedelta(days=1), "00:00")
+        # 「明日以降」の行（実施日が今日）を、時刻の欄が項目の終わりで閉じる形にする
+        rc, _out = self.ed("add", "--section", "明日以降", "--title", "移せない", "--due", (date.today() + timedelta(days=1)).isoformat())
+        self.assertEqual(rc, 0)
+        self.put_legacy_due("移せない", date.today().isoformat())
+        lines = self.text().splitlines(keepends=True)
+        for (s, e, _n) in dw._scan_board(lines)[1]:
+            b = "".join(lines[s:e + 1])
+            if dw._element_text(b, "task-title") == "移せない":
+                b2 = b.replace('<p class="task-title">', '<span class="time">9:00<p class="task-title">', 1)
+                k = b2.rstrip().rfind("</div>")
+                self.write(self.text().replace(b, b2[:k] + "</span>" + b2[k:], 1))
+                break
+        st = self.status()
+        k13 = [w for w in st["warnings"] if w["code"] == "K13"]
+        self.assertEqual(len(k13), 1)
+        self.assertIn("9:00|移せない", k13[0]["message"])
+        self.assertIn("その場に残ります", k13[0]["message"])
+        rolled, info = dw.roll_board_text(self.text(), date.today() + timedelta(days=1), "00:00")
+        self.assertEqual(info["due_moved"], 0)
+        lines = rolled.splitlines(keepends=True)
+        left = [(n, "".join(lines[s:e + 1])) for (s, e, n) in dw._scan_board(lines)[1] if "移せない" in "".join(lines[s:e + 1])]
+        self.assertEqual([n for n, _b in left], ["明日以降"])          # 文言を残したまま、その場に残る
+
+    def test_time_text_reads_the_browser_range(self):
+        """欄の時刻を読む所はすべて、鍵と同じ読み方（_time_text・v2.15）で、ブラウザが欄とみなす範囲だけを読む（Deck と board_edit.py で同じ）。
+        ①閉じタグが無く、閉じる所までに class の要素が無い欄（v2.14 までの _element_text は最初の </span> までの「0:00未」を読み、
+        実施日の時刻を使った＝画面の data-orig「0:00」と分かれた）②外側でも開いていない閉じタグ（</b>）はブラウザと同じく読み飛ばす
+        ③p の欄は後ろの block 要素の手前で閉じる。"""
+        from datetime import timedelta
+        today = date.today()
+        d = today.isoformat()
+        one = ('<div class="item" data-due="%s 10:00"><div><p class="task-title">X</p><span class="time">0:00</div>'
+               '<div class="chips"><span class="chip pending">未</span></div></div>\n' % d)
+        stray = '<div class="item"><div><p class="task-title">Y</p></div><span class="time">9:00</b><span class="x">a</span></div>\n'
+        para = '<div class="item"><p class="time">9:00<div><p class="task-title">Z</p></div></div>\n'
+        for mod in (dw, be):
+            with self.subTest(mod=mod.__name__):
+                self.assertEqual((mod._element_text(one, "time"), mod._time_text(one)), ("0:00未", "0:00"))
+                shaped = mod._due_moved_shape(one, mod.parse_due_value(d + " 10:00"), today, "\n", True)
+                self.assertIn('<div class="time">0:00</div>', shaped)            # 画面（data-orig「0:00」）と同じ時刻
+                self.assertIn('data-due="%s 0:00"' % d, shaped)
+                self.assertIn('<span class="chip pending">未</span>', shaped)
+                self.assertEqual(mod._item_key(stray), "9:00|Y")
+                gone, n = mod._remove_time_elements(stray)
+                self.assertEqual((n, "class=\"x\"" in gone), (1, False))         # x はブラウザでも欄の中（</b> を読み飛ばす）
+                gone, n = mod._remove_time_elements(para)
+                self.assertEqual(n, 1)
+                self.assertIn('<p class="task-title">Z</p>', gone)                 # p の欄は <div> の手前で閉じる＝タイトルは欄の外
+                self.assertEqual(mod._time_text(para), "9:00")
+        # K14 も同じ読み方（時刻の欄「0:00」と実施日の時刻「10:00」が違う＝食い違い）
+        self.assertEqual(be._later_time_conflict(one, "10:00"), "0:00")
+
+    def wrap_at_item_end(self, text, title):
+        """タイトル title の行の時刻の欄を、閉じタグを項目の最後の </div> の手前に置いた形にする（サンドボックスの板だけ）。"""
+        text = text.replace('<div class="time">9:00</div>', '<span class="time">9:00', 1)
+        lines = text.splitlines(keepends=True)
+        for (s, e, _n) in dw._scan_board(lines)[1]:
+            b = "".join(lines[s:e + 1])
+            if dw._element_text(b, "task-title") == title:
+                k = b.rstrip().rfind("</div>")
+                return text.replace(b, b[:k] + "</span>" + b[k:], 1)
+        self.fail(title)
+
+    def test_time_removal_never_drops_task_text(self):
+        """時刻の欄を外す経路（Deck の D&D の反映・board_edit.py の move・set-time --time none）は、外すとタイトル・補足・チップが
+        一緒に消える欄を外さない（Deck は 400、board_edit.py は書かずに断る。v1.9・v2.13 は消した）。"""
+        from datetime import timedelta
+        self.create()
+        wrap = self.wrap_at_item_end(self.text(), "朝会")
+        self.write(wrap)
+        k = [i["key"] for i in self.items() if i["title"] == "朝会"][0]
+        tom = (date.today() + timedelta(days=1)).isoformat()
+        new, code, _msg = dw.apply_board_move(wrap, k, "明日以降", today=date.today(), due=tom + " 10:00", set_due=True)
+        self.assertEqual((new, code), (None, 400))
+        before = self.read()
+        for args in (("move", "--item", "朝会", "--section", "明日以降", "--due", tom + " 10:00"),
+                     ("set-time", "--item", "朝会", "--time", "none")):
+            rc, out = self.ed(*args)
+            self.assertNotEqual(rc, 0, args)
+            self.assertUnchanged(before)
+        # class の書き方（空白・大文字・' の引用符・引用符なし）を問わず、欄の中の部品を見る（Deck と board_edit.py で同じ）
+        for cls in ('class = "task-title"', 'CLASS="task-title"', "class='task-title'", "class=task-title"):
+            row = '<div class="item"><span class="time">9:00 <p %s>A</p></span></div>\n' % cls
+            for mod in (dw, be):
+                with self.subTest(cls=cls, mod=mod.__name__):
+                    self.assertEqual(mod._remove_time_elements(row), (row, 0))
+        ok = ('<div class="item"><span class="time">9:00 <span class="chip-x">x</span><b data-class="item">y</b></span>'
+              '<p class="task-title">A</p></div>\n')
+        for mod in (dw, be):
+            self.assertEqual(mod._remove_time_elements(ok)[1], 1)       # 欄の中の chip-x・data-class は部品ではない
+        # class の値も大文字小文字を区別しない（ボードは互換モードで開かれ、ブラウザの class セレクタが区別しないため。class="Chip" も部品＝board.js の tbTimeHasPart と同じ）
+        upper = '<div class="item"><span class="time">9:00 <span class="Chip">x</span></span><p class="task-title">A</p></div>\n'
+        for mod in (dw, be):
+            self.assertEqual(mod._remove_time_elements(upper), (upper, 0))
+
+    def test_close_time_refuses_shapes_it_cannot_fix(self):
+        """欄が div の行（後ろの項目も中に入る）・閉じタグの数が1つ足して合わない行は、書かずに断る。"""
+        self.create()
+        self.put_rows(['<div class="item"><span class="time">0:00<div><p class="task-title">入れ違い</p>'
+                       '<div class="chips"><span class="chip pending">未</span></div></div></span></div>'])
+        before = self.read()
+        rc, out = self.ed("close-time", "--item", "入れ違い")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("restore", out["error"])
+        self.assertUnchanged(before)
+        # 時刻の文字の後ろにタグで囲んだ文字がある形（補うと「am」が欄の外へ出て鍵が変わる）
+        self.put_rows(['<div class="item"><span class="time">9:00 <b>am</b><div><p class="task-title">午前</p>'
+                       '<div class="chips"><span class="chip pending">未</span></div></div></div>'])
+        self.assertIn("9:00 am|午前", [i["key"] for i in self.items()])
+        before = self.read()
+        rc, out = self.ed("close-time", "--item", "午前")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("restore", out["error"])
+        self.assertUnchanged(before)
+        text = self.text().replace('<div class="time">9:00</div>', '<div class="time">9:00', 1)
+        self.write(text)
+        before = self.read()
+        rc, out = self.ed("close-time", "--item", "朝会")
+        self.assertNotEqual(rc, 0)
+        self.assertUnchanged(before)
 
 
 if __name__ == "__main__":

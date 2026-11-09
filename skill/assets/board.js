@@ -1,17 +1,17 @@
-  setTimeout(function () { location.reload(); }, 300000);
+  setTimeout(function () { tbReload(); }, 300000);
 
   // ---- 発行済みボード判定（Deck への書き込みガード・2026-08-05 新設） ----
   // スキルのテンプレ（board-template.html）やアーカイブのコピーをブラウザで開くと、
   // そのブラウザ／オリジンの localStorage の値が Deck へ送られ、本番の通知音設定（deck/sound.json）と
-  // 時刻上書きを上書きしてしまった（通知音は 2026-11-02 から⚙を操作したときだけ送る。✎ の時刻は
-  // 今日の記録があれば起動時にも送る。⚙の操作も含めて書き込みを止めるので、この判定は要る）。
+  // 時刻上書きを上書きしてしまった（通知音と ✎ の時刻は 2026-11-02 から操作したときだけ送る。
+  // その操作も含めて書き込みを止めるので、この判定は要る）。
   // 2026-08-05 実測: テンプレを開いた直後に watcher.log へ「通知音設定: 有効=OFF」が記録され、
   // 次の本番タブの push（5分周期）まで通知音が黙った（11:31:51→11:33:03・11:43:37→11:48:03）。
   // D&D 移動の POST /board/move に至っては HTML 正本そのものを書き換える。
   // そこで「実際に発行されたボードとして開かれたときだけ書き込む」判定をここで一度だけ行い、
   // 書き込み系の共通出口（deckPost と persistMove の fetch）でまとめてガードする。
   // 呼び出し側ごとに条件を置くと、書き込み経路が増えたときに必ず漏れるため1か所に集約する。
-  // 読み取り系（GET /notifications ＝ Deck の生死判定・GET /sound/config ＝⚙の表示）はガードしない。
+  // 読み取り系（GET /notifications ＝ Deck の生死判定・GET /sound/config ＝⚙の表示・GET /board/times ＝ ✎ の表示）はガードしない。
   // Deck に副作用が無く、テンプレを開いたときも「監視ねこ」の表示は従来どおり動かしたいため。
   // 判定できないときは書かない（fail-closed）。書けずに困るのは今日のボードで操作し直せば済むが、
   // 誤って書いた場合は本番設定が壊れて気づけないため、倒す向きを「書かない」側に固定する。
@@ -176,6 +176,264 @@
     if (!(port >= 1 && port <= 65535) || !k) return null;
     return { port: port, k: k };
   })();
+  // Deck が配ったページか（Deck v2.9・2026-11-04）。Claude デスクトップアプリの内蔵ブラウザは file:// を開けないので、
+  // Deck が受信ポートから板そのものを配る（http://127.0.0.1:<ポート>/?v=<表示の鍵>）。そのページは Deck と同じオリジンで、
+  // 下の deckFetch の要求は同じオリジンの要求になる。file: のページと同じく「Deck が見ている板を開いたページ」として扱う
+  // （今日でないボードの知らせ・ボードの点検の文面）。本当に Deck が見ている板かは、従来どおり Deck が申告とトークンで
+  // 確かめる（配った板の申告は http://127.0.0.1:<ポート>/）。接続情報があるのにポートが違うページ（ほかのプログラムが
+  // 127.0.0.1 で配った写し等）は含めない。発行済みボード判定（TB_LIVE）はここを見ない（判定は変えない）
+  // ✎ の時刻の欄を結ぶ関数（自動機能の IIFE が入れる。D&D の IIFE が、実施日の来た行に足した時刻の欄に使う）
+  var tbBindTimeEl = null;
+  // 行の鍵（D&D で Deck へ送る k・localStorage の移動と × の記録・✎ の上書き・通知の鍵）の作り方は Deck の _key_text が正本で
+  // （Deck v2.14・board_edit.py v1.10 が同じ関数を写して持つ。欄の範囲は Deck v2.15・board_edit.py v1.11）、ここはその規則を DOM に当てたもの
+  // （2026-11-06 ユーザー決定「鍵の作り方を1か所にまとめる」）。Deck は HTML の文字を、要素の開きタグの後から、要素と同じ名前の最初の閉じタグの
+  // 手前まで読む（stopAtClass が真なら、その前の class を持つ開きタグの手前まで。さらに時刻の欄は、ブラウザが欄とみなす範囲〔Deck の
+  // _time_range＝閉じタグの無い欄はブラウザが閉じる所まで、p の欄は後ろの p を閉じる要素の手前まで〕の終わりでも読み終える）。DOM では、
+  // 要素の中を HTML の並びどおりにたどって文字を集め、同じ名前の子孫の終わり（＝最初の閉じタグ）か、class を持つ子孫の始まりで読み終える
+  // （DOM の要素はブラウザが閉じた所で終わるので、範囲の終わりはそろう。ただし Deck の `_implied_close`・`_P_CLOSERS` の注釈に挙げた形〔同じ名前の閉じタグが外側の閉じタグの後にある欄・標準モードの板の p の欄の table〕は除く）。ブラウザは閉じタグの無い要素の中に後ろの要素を取り込むが、
+  // 取り込まれた要素の文字は読まないので、HTML の文字から作る Deck の鍵と合う。
+  // file: で開いた板では元の HTML の文字を読めず、Deck が止まっていても鍵は要るので、ブラウザでも作る。一致は試験で見る
+  // （tests/test_board_browser.py の TestBrokenTimeKeys）。
+  function tbKeyWalk(el, stopAtClass) {
+    var out = '', tag = el.tagName, done = false, stopped = false;
+    (function walk(n) {
+      for (var c = n.firstChild; c && !done; c = c.nextSibling) {
+        if (c.nodeType === 3) { out += c.data; continue; }
+        if (c.nodeType !== 1) continue;
+        if (stopAtClass && c.hasAttribute('class')) { done = stopped = true; return; }
+        walk(c);
+        if (c.tagName === tag) done = true;
+      }
+    })(el);
+    return { text: out, stopped: stopped };
+  }
+  function tbKeyText(el, stopAtClass) {
+    return tbKeyWalk(el, stopAtClass).text;
+  }
+  // 時刻の欄の中身を書き換えてはいけない欄か。読み込んだときに、欄の中に class を持つ要素があった欄をそう判定する（閉じタグの無い欄
+  // ＝ブラウザが後ろの要素を中に取り込んだ形を含む。「ボードの点検」の⑥は、そのうち data-tb-unclosed の欄を持つ項目を数える）——<span class="time">0:00 の閉じが無いと、後ろの
+  // <div><p class="task-title">… が中に入る。<div class="time"><div>9:00</div></div> のような class の無い入れ子は壊れていない（Deck の
+  // _TIME_OPEN_RE の前の注記が正しい形として挙げる形）。壊れた欄は ✎ の表示と結び付けが文字を書き換えない（書き換えると、取り込まれた
+  // タイトルやチップまで消える）。「ボードの点検」にも出す
+  function tbTimeElBroken(el) {
+    return el.hasAttribute('data-tb-text');
+  }
+  // 時刻の欄の中に行の部品（タイトル・補足・チップの箱・チップ・項目）があるか。Deck・board_edit.py の _remove_time_elements が外さない欄と
+  // 同じ（_ROW_PART_RE）で、D&D で行の形を作るか（shapeDueMove・setLaterDue）はこれで決める。画面の欄は DOM の欄（ブラウザが閉じタグの無い
+  // 欄の中に後ろの要素を取り込んだもの）で、Deck は閉じタグの無い欄をブラウザが閉じる所までの欄とみなす（_implied_close・Deck v2.14）ので、
+  // 閉じタグの有無によらず同じ欄を見る——欄の中に部品が入っていれば、画面も Deck も形を作らない（印だけ・400）。部品でない class の要素だけが
+  // 入っている欄（閉じタグのある <span class="time">9:00<span class="x">a</span></span> も、閉じタグの無い <span class="time">0:00 <span class="x">a</span></div> も）は、
+  // Deck が外して形を作るので、画面も同じ形にする（2026-11-06・11-07）。欄の時刻は、どこでも行の鍵と同じ読み方（tbTimeText＝Deck の _time_text・
+  // Deck v2.15）で読む——shapeDueMove はその欄の「9:00」を行の時刻にし（Deck も同じ。Deck v2.14 までは欄の文字全体「9:00a」を読み、H:MM でないので
+  // 実施日の時刻を使った）、setLaterDue の未定は欄に触れない（Deck の _later_due_shape と同じ）。画面と board.html が同じになることは tests/test_board_browser.py の
+  // test_part_free_child_screen_matches_file で見る。class の値は小文字にそろえて比べる（Deck の _ROW_PART_RE の re.I と同じ）——board-template.html
+  // から作った板は doctype が無く互換モードで開かれ、querySelector も大文字小文字を区別しないが、手で doctype を足した板〔標準モード〕では
+  // 区別するので、querySelector には頼らない（互換モードの板は test_case_of_class_on_quirks_board、標準モードの板は同じ試験の後半で見る）
+  var TB_PART_CLASSES = ['task-title', 'task-note', 'chips', 'chip', 'item'];
+  function tbTimeHasPart(el) {
+    var all = el.getElementsByTagName('*');
+    for (var i = 0; i < all.length; i++) {
+      var cls = (all[i].getAttribute('class') || '').toLowerCase().split(/\s+/);
+      for (var j = 0; j < cls.length; j++) if (TB_PART_CLASSES.indexOf(cls[j]) >= 0) return true;
+    }
+    return false;
+  }
+  // 時刻の欄の文字（行の鍵と通知の鍵に使う。tbKeyText の stopAtClass）。壊れた欄は、board.js が何かを足す前に読み込んだときに控えて、
+  // それを返す（欄の中にチップの箱が入っているので、後から足す「時刻超過」「▶ 次」などが混ざらないように。控えは5分ごとの読み直しで
+  // HTML から取り直す）。壊れていない欄は、その時点の文字を読む（✎ で変えた時刻の表示を、通知が読むため）
+  function tbTimeText(el) {
+    var v = el.getAttribute('data-tb-text');
+    return v !== null ? v : tbKeyText(el, true);
+  }
+  // タイトルの文字（行の鍵と通知の鍵に使う。Deck と同じく、同じ名前の最初の閉じタグで読み終える）
+  function tbTitleText(el) {
+    return el ? tbKeyText(el, false) : '';
+  }
+  // data-tb-unclosed＝欄と同じ名前の最初の閉じタグより前に class を持つ要素がある欄（tbKeyWalk が class で止まった欄。board_edit.py の
+  // _time_open_unclosed・警告 K15 と同じ判定。「ボードの点検」の⑥が数える）。class の無い同じ名前の子が先に閉じる欄
+  // （<span class="time"><span>9</span>:00 <span class="x">…</span></span> など）は、✎ は守るが⑥には数えない（K15 にも出ないため）
+  Array.prototype.forEach.call(document.querySelectorAll('.item .time'), function (el) {
+    if (!el.querySelector('[class]')) return;
+    var w = tbKeyWalk(el, true);
+    el.setAttribute('data-tb-text', w.text);
+    if (w.stopped) el.setAttribute('data-tb-unclosed', '');
+  });
+  var TB_SERVED = String(location.protocol) === 'http:' && location.hostname === '127.0.0.1'
+    && !!location.port && (location.pathname === '/' || location.pathname === '/board.html')
+    && (!DECK_KEY || String(DECK_KEY.port) === String(location.port));
+  // ページの読み直し。Deck が配ったページでは、このページを配った本物の Deck が答えるのを確かめてから読み直す。
+  //   ・Deck が止まっている間に読み直すと、ブラウザのエラーの画面になって board.js が動かなくなり、Deck が戻っても
+  //     自分では戻れない
+  //   ・読み直しの URL には表示の鍵（?v=）が入る。Deck が止まっている間に同じ PC の別のユーザーのプログラムが
+  //     このポートを取っていると、読み直しで鍵をそのプログラムへ送ってしまう。そのプログラムも固定の文字列は返せるので、
+  //     鍵を知る者にしか作れない証しで確かめる: /ping?n=<乱数> を送り、Deck が返す HMAC-SHA256(鍵, "today-board-ping:
+  //     <ポート>:<乱数>") を、このページの ?v= と location.port で作った値と比べる（Deck v2.9 の ping_proof。ポートを入れるのは、
+  //     別のポートで動く本物の Deck へ乱数を中継して証しを得る形を止めるため）
+  // 確かめられなければ読み直さない（証しを作れない環境＝crypto.subtle の無いブラウザでも読み直さない側に倒す）。
+  // 自動の読み直しは 15 秒ごとに確かめ直す（その間の監視ねこの行は、Deck が止まっていれば「停止」、受信ポートでほかのものが
+  // 答えていれば「古い」か「不明」。同じポートで表示の鍵が替わったときも証しが合わないので「古い」のまま）。手の読み直し（⚙の横の ↻）は
+  // 確かめ直さず、読み直さなかったことを右下に知らせる。
+  // 確かめるかどうかは「file: でなく、URL に ?v= がある」で決める（TB_SERVED では決めない）。TB_SERVED は接続情報の
+  // ポートが配り元と違うページを含めないが、そのページの URL にも鍵が入りうるので、鍵の入った URL はいつも確かめる。
+  // file: のページと、?v= の無いページ（artifact など。送る鍵が無い）はそのまま読み直す
+  function tbUrlHasViewKey() {
+    try { return new URLSearchParams(location.search).has('v'); } catch (err) { return /[?&]v=/.test(String(location.search)); }
+  }
+  function tbHex(buf) {
+    return Array.prototype.map.call(new Uint8Array(buf), function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+  }
+  // このページを配った Deck かを確かめる。Promise（true／false）を返す。確かめる手段が無ければ null
+  function tbVerifyDeck() {
+    var key = null;
+    try { key = new URLSearchParams(location.search).get('v'); } catch (err) { key = null; }
+    var c = window.crypto;
+    if (!key || !c || !c.subtle || !c.getRandomValues || !window.fetch || !window.TextEncoder || !window.Promise) return null;
+    var nb = new Uint8Array(16);
+    c.getRandomValues(nb);
+    var n = tbHex(nb.buffer);
+    var enc = new TextEncoder();
+    var ctl = window.AbortController ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function () { ctl.abort(); }, 3000) : null;
+    var opt = { cache: 'no-store' };
+    if (ctl) opt.signal = ctl.signal;
+    var want, got;
+    try {
+      want = c.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+        .then(function (k) { return c.subtle.sign('HMAC', k, enc.encode('today-board-ping:' + location.port + ':' + n)); })
+        .then(tbHex);
+      got = fetch('/ping?n=' + n, opt).then(function (res) { return res && res.ok ? res.text() : ''; });
+    } catch (err) { if (timer) clearTimeout(timer); return null; }
+    var main = Promise.all([want, got]).then(function (r) {
+      if (timer) clearTimeout(timer);
+      return r[1] === 'deck-board-mover ' + r[0];
+    }, function () { if (timer) clearTimeout(timer); return false; });
+    // AbortController の無いブラウザでは fetch が戻らないことがある。決着しないまま待ち続けないよう、
+    // TB_VERIFY_LIMIT_MS で確かめられなかった（false）ことにする
+    var limit = new Promise(function (res) { setTimeout(function () { res(false); }, TB_VERIFY_LIMIT_MS); });
+    return Promise.race([main, limit]);
+  }
+  function tbReloadRefused() {
+    var area = document.getElementById('toast-area');
+    if (!area) return;
+    var el = document.createElement('div');
+    el.className = 'toast';
+    el.textContent = 'このボードを配った Deck の応答を確かめられないため、読み直しませんでした。'
+      + 'Deck が動いているかを監視ねこの欄で確かめてください（Deck を起動し直してポートが替わったときは、新しい URL を開き直します）';
+    el.addEventListener('click', function () { if (el.parentNode) el.remove(); });
+    area.appendChild(el);
+    setTimeout(function () { if (el.parentNode) el.remove(); }, 15000);
+  }
+  // 読み直す前に Deck を確かめるページか（file: でなく、URL に ?v= がある）。監視ねこの「古い」の文面の出し分けにも使う
+  function tbReloadIsChecked() {
+    return String(location.protocol) !== 'file:' && tbUrlHasViewKey();
+  }
+  // 自動の読み直しの確かめは同時に1本だけにする（5分ごと・接続情報が古いとき・日付の切り替えなどが重なっても、
+  // 15 秒ごとの確かめ直しを何本も並べない）
+  var tbReloadWaiting = false;
+  var TB_RELOAD_RETRY_MS = 15000;   // 自動の読み直しの確かめ直しの間隔
+  var TB_VERIFY_LIMIT_MS = 5000;    // 1回の確かめを待つ上限
+  // 利用者が入力している間は、自動の読み直しを延ばす（2026-11-06）——「明日以降」へ戻す行の実施日の入力欄（dialog.later-due）と
+  // ✎ の時刻の入力欄が開いている間と、Deck への要求（deckFetch）が答えを待っている間。読み直すと、入れた値が黙って消え、
+  // 閉じた直後なら送った移動・時刻の保存を途中で切る。自動の読み直し（5分ごと・日付が変わった直後・Deck の再起動に合わせた
+  // 読み直し・発行直後と「今日でないボード」の知らせの読み直し）はどれもここを通るので、どれも同じく延びる。延ばしている間は
+  // TB_HOLD_RECHECK_MS ごとに見直し、閉じたら読み直す（Deck を確かめるページは、確かめるところからやり直す）。
+  // 手で押した読み直しは入力欄を待たない（押した時点で ✎ の入力欄は閉じて確定する）が、答えを待っている要求は
+  // TB_HOLD_MANUAL_MS まで待つ（deckFetch は 1.5 秒で打ち切るので、ふつうはその前に終わる）
+  // 読む→送るの途中（✎ の時刻・通知音の設定）も延ばす。読んだ答えから送るまでの間は数えが 0 になりうるため、
+  // 自動機能の側が途中かどうかを tbReloadHolds に返す（真なら延ばす）
+  var tbDeckInFlight = 0;           // Deck への要求のうち、答えをまだ受けていない数（deckFetch が数える）
+  var tbReloadHolds = [];
+  var TB_HOLD_RECHECK_MS = 1000;
+  var TB_HOLD_MANUAL_MS = 2000;
+  function tbReloadHeld() {
+    if (document.querySelector('dialog.later-due, .item .time input') || tbDeckInFlight > 0) return true;
+    return tbReloadHolds.some(function (f) { return f(); });
+  }
+  // ---- 開いたまま日付が変わったページからは書かない（2026-11-06） ----
+  // 発行済みボード判定（TB_LIVE）は読み込んだときに決まるので、開いたまま 0:00 をまたぐと昨日の板の判定のまま残る。日付が
+  // 変わった直後の読み直しは入力欄を閉じるまで延びる（上）ので、その間に決めた操作が昨日の板に書かれうる。そこで Deck へ書く操作
+  // （D&D の移動・「明日以降」へ戻す実施日・✎ の時刻・通知音の設定・通知の確認）は、押した時点の暦日が読み込んだ日と違えば
+  // 送らず（localStorage にも積まず）、読み直す。利用者の操作なら、その場で TB_DAY_STOP_MSG を出し（Deck を確かめられずに読み直しが
+  // 待つ間も、保存していないことが分かるように）、読み直した後に TB_DAY_MSG を1回だけ出す（読み直した後の板が今日のものでなければ、
+  // 代わりに TB_DAY_UNSAVED を「書き込み停止中」の知らせに足す。sessionStorage の印は、実際に読み直す
+  // 直前にだけ置く＝読み直さなかったときに印が残って、後の別の読み直しで出ることを防ぐ）。D&D は動かす前に止める（行は元の位置のまま）
+  function tbDayOf(d) { return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+  var TB_LOAD_DAY = tbDayOf(new Date());
+  var TB_DAY_STOP_MSG = '日付が変わったので、この操作は保存していません。ボードを読み直します';
+  var TB_DAY_MSG = '日付が変わったので、ボードを読み直しました。もう一度操作してください';
+  // 読み直した後の板が今日のものでない（Deck が止まっていて今日の板がまだ無いなど）ときは、もう一度操作しても保存されないので
+  // TB_DAY_MSG は出さない。代わりに「今日でないボードの知らせ」（書き込み停止中）の本文の頭にこの文を足す（知らせの直し方の欄が
+  // ふつうは「今日のボードを作って」と頼むよう案内する〔写しの板では Deck が見ている board.html を開くよう案内する〕ので、ここでは繰り返さない。トーストと知らせの二重には出さない）
+  var TB_DAY_UNSAVED = '日付が変わったので、前の画面での操作は保存していません。';
+  var tbDayNoticeWanted = false;   // 読み直した後に TB_DAY_MSG を出すか（tbReload が読み直す直前に印を置く）
+  var tbDayUnsaved = false;        // 読み直した後の板が今日のものでなく、知らせに TB_DAY_UNSAVED を足すか
+  var tbDayEl = null;
+  function tbDayToast(msg) {   // 続けて出しても1件にまとめる
+    var area = document.getElementById('toast-area');
+    if (!area) return;
+    var el = tbDayEl;
+    if (!el || !el.parentNode) {
+      el = document.createElement('div');
+      el.className = 'toast tb-day-changed';
+      el.addEventListener('click', function () { if (el.parentNode) el.remove(); });
+      tbDayEl = el;
+    }
+    el.textContent = msg;
+    area.appendChild(el);
+    var auto = false;
+    try { auto = window.localStorage.getItem('tb:toastMode') === 'auto'; } catch (err) { auto = false; }
+    if (auto) setTimeout(function () { if (el.parentNode && el.textContent === msg) el.remove(); }, 30000);
+  }
+  function tbDayChanged() { return tbDayOf(new Date()) !== TB_LOAD_DAY; }
+  // 日付が変わったとして一度でも止めたか。✎ と通知音の操作は、読む→送るの途中で日付が変わると deckPost がここで止めて
+  // undefined を返す。それを「Deck に届かなかった」と取り違えて2件目の知らせを出さないよう、呼び出し側がこれを見る（2026-11-06）
+  var tbDayStopped = false;
+  // 日付が変わっていれば読み直して true（呼び出し側は送らない）。tell が真なら、その場で知らせ、読み直した後にも知らせる
+  function tbDayStop(tell) {
+    if (!tbDayChanged()) return false;
+    tbDayStopped = true;
+    if (tell) {
+      tbDayToast(TB_DAY_STOP_MSG);
+      tbDayNoticeWanted = true;
+    }
+    tbReload();
+    return true;
+  }
+  (function () {
+    var v = null;
+    try {
+      v = window.sessionStorage.getItem('tbDayNotice');
+      if (v) window.sessionStorage.removeItem('tbDayNotice');
+    } catch (err) { v = null; }
+    if (!v) return;
+    if (TB_LIVE.live) tbDayToast(TB_DAY_MSG);
+    else tbDayUnsaved = true;
+  })();
+  function tbReload(manual) {
+    if (!manual) {
+      if (tbReloadWaiting) return;
+      tbReloadWaiting = true;
+    }
+    var retry = function (ms) { setTimeout(function () { tbReloadWaiting = false; tbReload(); }, ms); };
+    if (!manual && tbReloadHeld()) { retry(TB_HOLD_RECHECK_MS); return; }
+    var t0 = Date.now();
+    var reloadNow = function () {
+      if (!manual && tbReloadHeld()) { retry(TB_HOLD_RECHECK_MS); return; }   // 確かめている間に入力が始まった
+      if (manual && tbDeckInFlight > 0 && Date.now() - t0 < TB_HOLD_MANUAL_MS) { setTimeout(reloadNow, 100); return; }
+      if (tbDayNoticeWanted) {
+        try { window.sessionStorage.setItem('tbDayNotice', '1'); } catch (err) { /* 読み直した後には出ない（その場では出した） */ }
+      }
+      location.reload();
+    };
+    if (!tbReloadIsChecked()) { reloadNow(); return; }
+    var again = function () {
+      if (manual) { tbReloadRefused(); return; }
+      retry(TB_RELOAD_RETRY_MS);
+    };
+    var p = tbVerifyDeck();
+    if (!p) { again(); return; }
+    p.then(function (ok) { if (ok) reloadNow(); else again(); }, again);
+  }
   // 読み直し（location.reload）の回数制限。発行済みの今日のボードだけが対象。
   // beforeReload は、実際に読み直す直前にだけ呼ぶ（読み直さなかったときは呼ばない）。
   function deckReloadOnce(kind, minGapMs, beforeReload) {
@@ -186,7 +444,7 @@
     if (Date.now() - last < minGapMs) return;
     try { window.sessionStorage.setItem(name, String(Date.now())); } catch (err) { return; }
     if (beforeReload) beforeReload();
-    location.reload();
+    tbReload();
   }
   // トークンが古いときの読み直し。同じトークンのまま2回読み直しても変わらなければ、もう読み直さない。
   var DECK_STALE_STUCK = false;
@@ -227,7 +485,14 @@
     var p;
     try { p = fetch(url, o); } catch (err) { p = null; }
     if (!p || !p.then) { if (timer) clearTimeout(timer); return null; }
+    // 答えを受けるまで自動の読み直しを延ばす（tbReload）。AbortController の無いブラウザでは fetch が戻らないことがあるので、
+    // 1.5 秒で数えから外す（外すのは1回だけ）
+    tbDeckInFlight++;
+    var counted = true;
+    var uncount = function () { if (counted) { counted = false; tbDeckInFlight--; } };
+    var uncountTimer = setTimeout(uncount, 1500);
     return p.then(function (res) {
+      uncount(); clearTimeout(uncountTimer);
       if (timer) clearTimeout(timer);
       if (res && res.status === 403 && res.clone) {
         // トークンが古い＝Deck が再起動した。新しいトークンは Deck が数秒以内に board.html へ
@@ -240,6 +505,7 @@
       }
       return res;
     }, function (err) {
+      uncount(); clearTimeout(uncountTimer);
       if (timer) clearTimeout(timer);
       throw err;
     });
@@ -273,13 +539,14 @@
 
     function parseHM(text) {
       var m = /(\d{1,2}):(\d{2})/.exec(text || '');
-      return m ? (+m[1]) * 60 + (+m[2]) : null;
+      // 範囲外（25:00 など）は読めない時刻にする（Deck の read_board_alarms・board_edit.py の K12 と同じ。2026-11-05）
+      return m && +m[1] <= 23 && +m[2] <= 59 ? (+m[1]) * 60 + (+m[2]) : null;
     }
     function fmtHM(mins) { return Math.floor(mins / 60) + ':' + ('0' + (mins % 60)).slice(-2); }
     function taskKey(item) {
       var t = item.querySelector('.time');
       var ti = item.querySelector('.task-title');
-      return ((t ? (t.getAttribute('data-orig') || t.textContent) : '') + '|' + (ti ? ti.textContent : '')).trim();
+      return ((t ? (t.getAttribute('data-orig') || tbTimeText(t).trim()) : '') + '|' + tbTitleText(ti)).trim();
     }
     function readJSON(k, d) { try { return JSON.parse(LS.get(k, JSON.stringify(d))); } catch (e) { return d; } }
 
@@ -325,6 +592,7 @@
     // 送ったときは応答の Promise を返す（応答を見ない呼び出し側は使わない）。
     function deckPost(path, obj) {
       if (!TB_LIVE.live) { tbBlockWrite(path); return; }
+      if (tbDayStop(path !== '/notifications/ack')) return;   // 開いたまま日付が変わった（通知の確認は知らせずに読み直す）
       var p = deckFetch(path, { method: 'POST', body: JSON.stringify(obj) });
       if (p) p.catch(function () {});
       return p;
@@ -396,7 +664,7 @@
     // change は読んだ値を受けて送る値を返す。値が変わらず試聴でもなければ送らない。
     // 表示は応答を受けてから変える。応答が得られなければ Deck が受けたかは分からないので、読み直して映し、知らせを出す。
     function soundOperate(change, test) {
-      if (soundBusy || !TB_LIVE.live) return;
+      if (soundBusy || !TB_LIVE.live || tbDayStop(true)) return;
       soundBusy = true;
       soundError = '';
       renderSound();
@@ -412,6 +680,8 @@
         }
         function failed() { soundBusy = false; soundError = SOUND_MSG_FAILED; renderSound(); soundRefresh(true); }
         var p = deckPost('/sound/config', { enabled: next.enabled, type: next.type, test: !!test });
+        // 読む間に日付が変わって deckPost が止めたなら、その知らせ（TB_DAY_STOP_MSG）だけにする（送っていないので「届かなかった」は出さない）
+        if (!p && tbDayStopped) { soundBusy = false; renderSound(); return; }
         if (!p) { failed(); return; }
         p.then(function (res) {
           return res && res.ok ? res.json() : null;
@@ -427,13 +697,109 @@
         }, failed);
       });
     }
-    // ✎ の時刻上書きは localStorage にしかなく Deck からは見えない。送らないと Deck は
-    // HTML 側の元の時刻で鳴り、トーストは上書き後の時刻で出るのでズレる。
-    // キー＝taskKey（data-orig の元時刻 + '|' + タイトル）／値＝上書き後の表示時刻。
-    // Deck はこの元キーで HTML の item と突き合わせる。差分ではなく毎回まるごと送るので、
-    // 上書きを外したときもキーの消えた地図が届いて自然に元の時刻へ戻る。
-    function pushTimeOverrides() {
-      deckPost('/board/times', { ovr: readJSON('ovr:' + dateKey, {}) });
+    // ---- ✎ の時刻の上書き（持ち主は Deck だけ・2026-11-02 ユーザー決定。通知音の設定と同じ形） ----
+    // ブラウザには持たない。読み込みでは GET /board/times で読んで表示と判定に使うだけで、送るのは ✎ を操作したときだけ。
+    // ブラウザが持つと、開いただけで古い記録が Deck を上書きし、別のボードで付けた値まで届く（file: の localStorage は共有される）。
+    // キー＝taskKey（data-orig の元時刻 + '|' + タイトル）／値＝上書き後の表示時刻。Deck はこの元キーで HTML の item と突き合わせる。
+    // timesMap＝いま読めている地図（null＝読めていない。✎ は操作できない）。timesLast＝このページで最後に読めた地図。
+    // 読めない間も、表示と判定は timesLast で続ける（1回の通信の失敗で、元の時刻のポップアップを出さない）。メモリにだけ置くので、
+    // ページを読み直した後に読めなければ元の時刻になる（ブラウザには残さない＝Deck の値が正）。
+    // 今日でない板では読まない（Deck の地図は今日のボードのもの）。Deck が読めなくてもポップアップは動く（checkAlarms。時刻は timesLast、それも無ければ元の時刻）。
+    var timesMap = null;
+    var timesLast = null;
+    var timesGen = 0;          // 操作のたびに増やす（操作の前に始めた読み直しの結果を、操作の後に適用しない）
+    var timesLoaded = false;   // 一度でも結果が出たか。出るまでは時刻の判定をしない（元の時刻で誤って通知を出さないため）
+    var timesBusy = false;     // 操作の途中（読む→送る）
+    tbReloadHolds.push(function () { return timesBusy || soundBusy; });   // 読む→送るの途中は読み直さない
+    var timesReading = false;
+    var TIME_MSG_LOCKED = '時刻の変更は Deck に保存します。Deck から読めないため、いまは変更できません。Deck が止まっている、この環境に Deck が無い、このボードは Deck が見ているものではない、Deck を起動し直した直後で読み直しを待っている、などの場合です（状態は監視ねこの欄に出ます）。表示は、このページで最後に読めた時刻か、読めていなければ元の時刻です。';
+    var TIME_MSG_NOT_TODAY = '今日のボードではないため、時刻は変更できません。元の時刻を表示しています。';
+    var TIME_MSG_READ_FAILED = 'Deck から読めなかったので、時刻の変更は送っていません。';
+    var TIME_MSG_FAILED = 'Deck に届かなかった可能性があります。時刻の変更は反映されていないことがあります。';
+    // 「明日以降」の行は ✎ で変えさせない（2026-11-05）。✎ の変更は Deck がその日のうちだけ持ち（sound.json の ovr_date）、
+    // 「明日以降」の行は今日の通知の対象にならない（checkAlarms・Deck の read_board_alarms）。実施日が来て今日の側へ移る日には
+    // 変更はもう無く、移す形（Deck の _due_moved_shape）は HTML の時刻（時刻の欄が H:MM ならそれ、無ければ実施日の時刻）を使うので、変えても効かないまま ✎ だけが残っていた
+    var TIME_MSG_LATER = '「明日以降」の行の時刻は、ここでは変更できません（ここでの変更はその日のうちだけ有効で、「明日以降」の行は今日の通知の対象になりません）。時刻を変えるときは Claude に頼んでください。';
+    function timesRead(done) {
+      var p = deckFetch('/board/times');
+      if (!p) { done(null); return; }
+      p.then(function (res) {
+        return res && res.ok ? res.json() : null;
+      }).then(function (d) {
+        var ok = d && d.ok === true && d.ovr && typeof d.ovr === 'object' && !Array.isArray(d.ovr);
+        done(ok ? d.ovr : null);
+      }, function () { done(null); });
+    }
+    function timesCan() { return TB_LIVE.live && !!timesMap && !timesBusy; }
+    // 読み直しの結果を反映する。表示に使う地図が変わったとき（と最初の結果）だけ判定し直す。読めなくなっただけなら操作の可否だけが変わる
+    function timesApply(cur) {
+      var changed = !timesLoaded || (!!cur && JSON.stringify(cur) !== JSON.stringify(timesLast));
+      timesMap = cur;
+      if (cur) timesLast = cur;
+      timesLoaded = true;
+      renderTimes();
+      if (changed) refresh();
+    }
+    function timesRefresh() {
+      if (timesBusy || timesReading) return;
+      if (!TB_LIVE.live) { timesApply(null); return; }
+      timesReading = true;
+      var gen = timesGen;
+      timesRead(function (cur) {
+        timesReading = false;
+        if (!timesBusy && gen === timesGen) timesApply(cur);
+      });
+    }
+    var timeMsgEl = null, timeMsgTimer = null;
+    function timeToast(msg) {   // 続けて出しても1件にまとめる（D&D の moveSaveFailed と同じ形）
+      var area = document.getElementById('toast-area');
+      if (!area) return;
+      var el = timeMsgEl;
+      if (!el || !el.parentNode) {
+        el = document.createElement('div');
+        el.className = 'toast';
+        el.addEventListener('click', function () { if (el.parentNode) el.remove(); });
+        timeMsgEl = el;
+      }
+      el.textContent = msg;
+      area.appendChild(el);
+      if (timeMsgTimer) { clearTimeout(timeMsgTimer); timeMsgTimer = null; }
+      if (LS.get('toastMode', 'stay') === 'auto') {
+        timeMsgTimer = setTimeout(function () { if (el.parentNode) el.remove(); }, 30000);
+      }
+    }
+    // ✎ の操作。地図は丸ごと置き換えなので、別のブラウザの上書きを消さないよう、送る直前に読み直して自分の変更だけを足す。
+    // 読めなければ送らない。何も変わらなければ送らない。表示は応答を受けてから変える。
+    function timesOperate(key, disp, orig) {
+      if (timesBusy || !TB_LIVE.live) return;
+      timesBusy = true;
+      timesGen++;
+      renderTimes();
+      function finish() { timesBusy = false; renderTimes(); refresh(); }
+      function failed() { timeToast(TIME_MSG_FAILED); timesBusy = false; timesRefresh(); renderTimes(); }
+      timesRead(function (cur) {
+        timesMap = cur;
+        if (cur) timesLast = cur;
+        timesLoaded = true;
+        if (!cur) { timeToast(TIME_MSG_READ_FAILED); finish(); return; }
+        var next = {};
+        Object.keys(cur).forEach(function (k) { next[k] = cur[k]; });
+        if (disp === orig) delete next[key];
+        else next[key] = disp;
+        if (next[key] === cur[key]) { finish(); return; }
+        var p = deckPost('/board/times', { ovr: next });
+        // 読む間に日付が変わって deckPost が止めたなら、その知らせ（TB_DAY_STOP_MSG）だけにする（送っていないので「届かなかった」は出さない）
+        if (!p && tbDayStopped) { finish(); return; }
+        if (!p) { failed(); return; }
+        p.then(function (res) {
+          return res && res.ok ? res.json() : null;
+        }).then(function (d) {
+          if (!d || d.ok !== true) { failed(); return; }
+          timesMap = next;
+          timesLast = next;
+          finish();
+        }, failed);
+      });
     }
 
     // ---- ポップアップ（③）: 発火判定は Deck、描画はここ ----
@@ -445,8 +811,50 @@
     // ユーザーがトーストを閉じたら ack して Deck の未確認から外す。
     var shownKeys = {};  // このページで描画済みのキー（Deck 経路とローカル経路の二重表示を防ぐ）
 
+    // 日付が変わった後に閉じた通知は、ここでは送らず（deckPost が止めて読み直す）、閉じた鍵を sessionStorage に持ち越す。
+    // 読み直した後のページは、読み込んだ後の最初の /notifications の答えにだけ当て、その答えに含まれていた鍵の通知を出さずに
+    // 確認として送る。答えを処理したら空にする（通知の鍵〔時刻|タイトル〕には日付が入らないので、後から来た同じ鍵の別の通知
+    // 〔毎日のルーチンなど〕は出す）。鍵は板（DECK_BOARD＝このページの板の URL）と組で持ち、同じタブで別の板を開いたときには当てない
+    // （Deck のポートは起動し直すと替わるが、板の URL は読み直しても同じなので、板の URL で見る）。
+    // 鍵ごとに閉じた時刻（ミリ秒）も持ち越し、答えの項目の at（Deck がその通知を未確認に積んだ、その日の HH:MM:SS）が閉じた時刻より
+    // 後なら当てない——閉じた後に鳴った同じ鍵の通知（ほぼ同時に鳴った今日の通知）を、一度も出さずに確認済みにしないため。at は
+    // 秒までなので同じ秒は後とみなし、at が無い・読めないときも当てない（どちらも、もう一度出す側に倒す）。at の日付は答えを受けた
+    // 日とする（Deck は今日の未確認だけを返す）。持ち越しの形は { board, closed: { 鍵: 閉じた時刻 } }（閉じた時刻の無い形は当てない）
+    var ackLater = null;   // 最初の答えを待つ間だけ、持ち越した { 鍵: 閉じた時刻 }
+    try {
+      var carried = JSON.parse(window.sessionStorage.getItem('tbAckLater') || 'null');
+      window.sessionStorage.removeItem('tbAckLater');
+      if (carried && carried.board === DECK_BOARD && carried.closed && typeof carried.closed === 'object') {
+        Object.keys(carried.closed).forEach(function (k) {
+          var ms = +carried.closed[k];
+          if (isFinite(ms) && ms > 0) {
+            if (!ackLater) ackLater = Object.create(null);
+            ackLater[k] = ms;
+          }
+        });
+      }
+    } catch (err) { ackLater = null; }
+    // 持ち越した鍵を、答えの項目 it に当てるか（Deck がその通知を積んだのが、閉じたより前と言えるときだけ）
+    function ackLaterApplies(later, it) {
+      if (!later || !(it.key in later)) return false;
+      var m = /^(\d{2}):(\d{2}):(\d{2})$/.exec(typeof it.at === 'string' ? it.at : '');
+      if (!m) return false;
+      var d = new Date();
+      var at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), +m[1], +m[2], +m[3]).getTime();
+      return at + 1000 <= later[it.key];
+    }
     function ackNotifications(keys) {
-      if (keys && keys.length) deckPost('/notifications/ack', { keys: keys });
+      if (!keys || !keys.length) return;
+      if (tbDayChanged()) {
+        try {
+          var c = JSON.parse(window.sessionStorage.getItem('tbAckLater') || 'null');
+          var closed = c && c.board === DECK_BOARD && c.closed && typeof c.closed === 'object' ? c.closed : {};
+          var now = Date.now();
+          keys.forEach(function (k) { closed[k] = now; });
+          window.sessionStorage.setItem('tbAckLater', JSON.stringify({ board: DECK_BOARD, closed: closed }));
+        } catch (err) { /* 持ち越せなければ、読み直した後にもう一度出る */ }
+      }
+      deckPost('/notifications/ack', { keys: keys });
     }
     // 1件描画する。描画したら true。キー定義は Deck の read_board_alarms と同一。
     function showNotification(key, msg) {
@@ -486,7 +894,9 @@
     //   stale       … 403 "token mismatch"。Deck を再起動した直後なら読み直しで戻る
     //   foreign     … 上のどれでもない応答（目印の無い 200〔JSON として読めないものを含む〕・
     //                 ほかの 403・それ以外の状態コード）
-    //   ※CORS ヘッダの無い応答は fetch 自体が失敗するので down（停止）に入る
+    //   ※file: の板では、CORS ヘッダの無い応答は fetch 自体が失敗するので down（停止）に入る。Deck が配った板
+    //     （Deck v2.9）は同じオリジンへの要求なので CORS は関わらず、上の分け方のとおりになる（受信ポートで Deck 以外の
+    //     ものが答えれば foreign、別のユーザーの Deck の token mismatch なら stale）
     var deckAliveAt = null;    // 最後に応答があった時刻
     var deckDownSince = null;  // 稼働以外になった時刻（null＝稼働中）
     var deckState = null;      // 上のどれか（null＝未確定。確定前は何も描かない）
@@ -498,6 +908,11 @@
       // ⚙の通知音も Deck の応答に合わせる（読めない間は操作できない。戻ったら読み直す）
       if (st === 'up') { if (!soundCfg) soundRefresh(); }
       else if (!soundBusy && (soundCfg || !soundLoaded)) { soundCfg = null; soundLoaded = true; renderSound(); }
+      // ✎ の時刻も同じ（読めない間は操作できない。表示は timesLast で続け、それも無ければ元の時刻。戻ったら読み直す）
+      if (TB_LIVE.live) {
+        if (st === 'up') { if (!timesMap) timesRefresh(); }
+        else if (!timesBusy && !timesReading && (timesMap || !timesLoaded)) timesApply(null);
+      }
       renderDeckStatus();
       renderBoardNotice();
     }
@@ -523,10 +938,15 @@
         // 目印を確かめる（ポートの持ち主が Deck 以外に替わった場合に備える）
         if (data.ok !== true || data.deck !== 'today-board') { setDeckState('foreign'); return; }
         setDeckState('up');
+        var later = ackLater;
+        ackLater = null;   // 持ち越した鍵は最初の答えにだけ当てる
         if (!data.items) return;
+        var done = [];
         data.items.forEach(function (it) {
+          if (ackLaterApplies(later, it)) { done.push(it.key); return; }   // 前のページで閉じた通知。出さずに確認として送る
           showNotification(it.key, '⏰ ' + it.time + ' ' + it.title);
         });
+        if (done.length) ackNotifications(done);
       }).catch(function () { setDeckState('down'); });
     }
 
@@ -562,7 +982,24 @@
           + '（その場合も自動収集と通知音は続きます。watcher.log で確かめられます）、ボードの DECK:AUTO の目印が欠けています'],
         'other-board': ['pending', '写し', 'Deck本体 ・ Deck が見ている board.html ではありません。Deck は動いていますが、'
           + 'このページには通知と設定が届きません'],
-        stale: DECK_STALE_STUCK
+        // Deck が配った板（読み直す前に Deck を確かめるページ）では、読み直しはこのボードを配った Deck と確かめられたときだけ
+        // 起きる。同じポートで Deck を起動し直したのなら確かめられて読み直すが、ポートを別のもの（別のユーザーの Deck など）が
+        // 持っていれば確かめられず、読み直さない。file: の板の文面（写し・書き込めていない／数秒〜1分で戻る）は当たらない
+        stale: tbReloadIsChecked()
+          ? (DECK_STALE_STUCK
+            ? ['pending', '古い', 'Deck本体 ・ 接続情報が古いままです' + since + '。読み直そうとしても新しくなりません。'
+              + '表示の鍵が替わった〔state.json を消した・Deck の版が替わった〕か、このポートで別のものが答えているか、'
+              + 'Deck が board.html に書き込めていません。Deck の再起動に合わせた読み直しは、これ以上新しくは始めません。'
+              + '確かめられずに待っている読み直しがあれば、15 秒ごとに確かめ直し、このボードを配った Deck と確かめられたら読み直します'
+              + '（5分ごとの読み直しも、確かめてから行います）。表示の鍵かポートが替わったときは、新しい URL を開き直してください']
+            : !TB_LIVE.live
+            ? ['pending', '古い', 'Deck本体 ・ 接続情報が古い' + since + '（今日のボードではないので、Deck の再起動に合わせた読み直しは'
+              + 'しません。5分ごとの読み直しは、このボードを配った Deck と確かめてから行います。表示の鍵かポートが替わったときは、'
+              + '新しい URL を開き直してください）']
+            : ['hold', '古い', 'Deck本体 ・ 接続情報が古い' + since + '（同じポートで Deck を起動し直した直後なら、このボードを配った Deck と'
+              + '確かめてから読み直して戻ります。戻らないときは、表示の鍵が替わった〔state.json を消した・Deck の版が替わった〕か、'
+              + 'このポートで別のものが答えています。どちらのときも、またポートが替わったときも、新しい URL を開き直してください）'])
+          : DECK_STALE_STUCK
           ? ['pending', '古い', 'Deck本体 ・ 接続情報が古いままです' + since + '。読み直しても新しくならないため、'
             + 'Deck が見ている board.html ではない（写し）か、Deck が書き込めていません。'
             + 'Deck の再起動に合わせた読み直しは止めました（5分ごとの再読み込みは続きます）']
@@ -608,7 +1045,9 @@
     var NOTICE_RELOAD_MS = 60000;  // その間に1回だけ読み直す時点（Deck が今日の板を作っていれば消える）
     var NOTICE_BASE_TITLE = document.title;
     var noticeTimers = {};
-    var NOTICE_IS_FILE = String(location.protocol) === 'file:';  // file: 以外＝artifact など（Deck に届かない）
+    // Deck が見ている板を開いたページか（file: か、Deck が配ったページ〔TB_SERVED・Deck v2.9〕）。
+    // それ以外＝artifact など（Deck に届かない）
+    var NOTICE_IS_LOCAL = String(location.protocol) === 'file:' || TB_SERVED;
 
     function noticeMD(dt) {
       return (dt.getMonth() + 1) + '/' + dt.getDate() + '（' + NOTICE_WD.charAt(dt.getDay()) + '）';
@@ -678,7 +1117,10 @@
       if (!noticeTimers.reload) {
         noticeTimers.reload = setTimeout(function () {
           try { window.sessionStorage.setItem(key, '1'); } catch (err) { renderBoardNotice(); return; }
-          location.reload();
+          // 日付が変わって保存しなかった操作の知らせは、この読み直しの先へ持ち越す（待つ間は知らせを出さないので、
+          // ここで落とすと一度も出ない。読み直した後の板が今日のものなら TB_DAY_MSG、そうでなければ知らせの頭に出る）
+          if (tbDayUnsaved) tbDayNoticeWanted = true;
+          tbReload();
         }, Math.max(0, NOTICE_LOADED + NOTICE_RELOAD_MS - Date.now()));
       }
       if (!noticeTimers.show) noticeTimers.show = setTimeout(renderBoardNotice, left + 50);
@@ -713,6 +1155,7 @@
         el.removeAttribute('data-sig');
         return;
       }
+      if (tbDayUnsaved && label === '書き込み停止中') body = TB_DAY_UNSAVED + body;
       var sig = [cls, icon, label, body, fix || ''].join('|');
       setTitle(cls === 'info' ? NOTICE_BASE_TITLE : '⚠ ' + NOTICE_BASE_TITLE);
       if (!el.hidden && el.getAttribute('data-sig') === sig) return;
@@ -739,8 +1182,8 @@
       el.appendChild(box);
       el.hidden = false;
     }
-    var NOTICE_BLOCKED = '通知音の設定・✎ の時刻の変更・通知の確認・ドラッグでの移動は Deck に届かず、'
-      + 'この画面の中だけの変更になります。';
+    var NOTICE_BLOCKED = '通知音の設定と ✎ の時刻は変更できません。通知の確認は Deck に届かず、'
+      + 'ドラッグでの移動はこの画面の中だけの変更になります。';
     var NOTICE_ASK = 'Claude に「今日のボードを作って」と頼むと直ります。';
     function renderBoardNotice() {
       if (TB_LIVE.live) {
@@ -750,10 +1193,19 @@
         var fm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(from);
         if (!fm) { setNotice(null); return; }
         var fd = new Date(+fm[1], +fm[2] - 1, +fm[3]);
-        var n = document.querySelectorAll('.item[data-carried-from]:not([data-sid])').length;
+        // 件数は Deck v2.12 が切り替えたときに .board へ書いた数（data-tb-rolled-carried・data-tb-rolled-due）を出す。行の印から数えると、
+        // 切り替えの後に add・create が印を足した行・D&D で動かした行まで数え、data-carried-from の残ったまま「明日以降」から移した行を落とすため。
+        // 数の無い板（v2.11 までの Deck が切り替えた板）だけ、これまでどおり行の印から数える
+        var cnt = function (name) { var v = board.getAttribute(name); return v !== null && /^\d+$/.test(v) ? +v : null; };
+        var n = cnt('data-tb-rolled-carried');
+        if (n === null) n = document.querySelectorAll('.item[data-carried-from]:not([data-sid])').length;
+        var dm = cnt('data-tb-rolled-due');
+        // 引き継いだ行（data-carried-from）は数えない: Deck v2.11 の _carry_due_today は、引き継ぐ行の実施日が前の日なら一度移した印も今日で付けるため
+        if (dm === null) dm = document.querySelectorAll('.item[data-due-moved="' + noticeISO(noticeToday()) + '"]:not([data-sid]):not([data-carried-from])').length;
         setNotice('info', '↪', '引き継いだボード',
           noticeMD(fd) + 'のボードから、終わっていないタスク' + (n ? n + '件' : '')
-          + 'を引き継いで、Deck が作ったボードです。今日の予定はまだ決めていません。',
+          + 'を引き継いで、Deck が作ったボードです。今日の予定はまだ決めていません。'
+          + (dm ? '実施日が来た予定 ' + dm + '件を「明日以降」から今日へ移しました。' : ''),
           '今日の予定は、Claude に「今日の予定を決めよう」と頼むと整えられます。');
         return;
       }
@@ -762,31 +1214,31 @@
       var label = '書き込み停止中';
       if (k.kind === 'template') {
         setNotice('muted', '⚠', label, 'これは発行前のテンプレートです。ボードは Claude が作ります。'
-          + (NOTICE_IS_FILE ? 'この画面での操作は Deck に届きません。' : ''),
+          + (NOTICE_IS_LOCAL ? 'この画面での操作は Deck に届きません。' : ''),
           'Claude に「今日のボードを作って」と頼んでください。');
         return;
       }
       if (k.kind === 'unreadable') {
         setNotice('warn', '⚠', label, 'ヘッダの日付「' + k.text + '」を日付として読み取れません。日付は「'
           + noticeISO(today) + '（' + NOTICE_WD.charAt(today.getDay()) + '）」の形で書く決まりです。'
-          + (NOTICE_IS_FILE ? '今日のボードと確かめられないため、' + NOTICE_BLOCKED : ''),
+          + (NOTICE_IS_LOCAL ? '今日のボードと確かめられないため、' + NOTICE_BLOCKED : ''),
           'Claude に「今日のボードを作り直して」と頼んでください。');
         return;
       }
       if (k.kind === 'future') {
         setNotice('warn', '⚠', label, 'ボードの日付が' + noticeMD(k.date) + 'になっていて、今日の' + noticeMD(today)
-          + 'より先です。' + (NOTICE_IS_FILE ? '今日のボードと確かめられないため、' + NOTICE_BLOCKED : ''),
+          + 'より先です。' + (NOTICE_IS_LOCAL ? '今日のボードと確かめられないため、' + NOTICE_BLOCKED : ''),
           'PC の時計か、ボードの日付の書き方を確かめてください。');
         return;
       }
       if (k.kind === 'other') {
         setNotice('warn', '⚠', label, '今日のボードと確かめられません（' + TB_LIVE.why + '）。'
-          + (NOTICE_IS_FILE ? NOTICE_BLOCKED : ''), NOTICE_ASK);
+          + (NOTICE_IS_LOCAL ? NOTICE_BLOCKED : ''), NOTICE_ASK);
         return;
       }
       // past: 過去の日付
       var head = 'このボードは' + noticeMD(k.date) + 'のものです。今日は' + noticeMD(today) + 'です。';
-      if (!NOTICE_IS_FILE) {
+      if (!NOTICE_IS_LOCAL) {
         setNotice('warn', '⚠', label, head, 'Claude に「今日のボードを作って」と頼んでください。');
         return;
       }
@@ -839,6 +1291,9 @@
       return s && e;
     }
     function renderBoardCheck() {
+      // 読み込みの後にも作り直す（D&D で行を動かしたとき・localStorage に残った移動を当てた後）。中身が前と同じなら作り直さない
+      // （role="status" の要素を作り直すと、読み上げが同じ知らせをくり返すため。#tb-board-notice と同じ方針）。違えば前の知らせを消して作る
+      var prev = document.getElementById('tb-board-check');
       var msgs = [];
       var nested = 0;
       Array.prototype.forEach.call(document.querySelectorAll('.item .item'), function (it) {
@@ -848,7 +1303,7 @@
         msgs.push('タスクの中に別のタスクが入り込んでいます（入り込んでいるタスク ' + nested + ' 件）。'
           + 'そこから先のタスクは、通知音・ドラッグでの移動・進捗の数え方から外れることがあります。');
       }
-      if (NOTICE_IS_FILE && !hasDeckMarkers()) {
+      if (NOTICE_IS_LOCAL && !hasDeckMarkers()) {
         msgs.push('Deck の予約領域（DECK:AUTO の目印）がそろっていません（片方だけ・順序が逆を含む）。全セッションの欄と、'
           + 'Deck との接続情報が更新されません。Deck v2.5 以後が動いていれば、目印が2つとも無いときは Deck が足し直します'
           + '（Deck が書いた部分がひと続きに残っていればそれを囲み、1つも無ければボードの末尾に足します）。片方だけ・順序が逆のとき・'
@@ -891,9 +1346,55 @@
         msgs.push('セクション見出し「' + odd.join('」「') + '」は正式名（今日の予定・今日中・ルーチンタスク・明日以降）では'
           + 'ありません。正式名でない見出しの項目は、進捗の数え方・ドラッグでの移動・日付の切り替えでの扱いが正式名と変わります。');
       }
+      // ---- 「明日以降」の時刻の食い違い（2026-11-05 新設・直さずに知らせるだけ） ----
+      // 「明日以降」の未完了の行で、実施日（data-due）に時刻があり、H:MM の時刻の欄がそれと違うもの。board_edit.py v1.6 までの操作
+      // （今日の側で set-time した行を D&D・move で「明日以降」へ戻す等）でできる（v1.7 の set-time・set-due・add・create は作らないが、
+      // v1.6 までに今日の側にできた行を戻したとき・restore で v1.6 までの板を戻したときには残る）。このままだと、今日の側へ動かすとき
+      // （D&D・move。印の無い行は Deck v2.11 の日付の切り替えも）は時刻の欄の時刻が使われ、ボードを作り直すと実施日の時刻だけが残る。
+      // どちらにするかを決めてもらう。時刻の欄が範囲外（25:00 など）の行は対象にしない（K12・「時刻を読めない」の側）
+      // 条件は board_edit.py の警告 K14（later_time_mismatches）と同じ。実施日の読み方は Deck の parse_due_value と同じ
+      // （YYYY-MM-DD H:MM で、暦にある日・時 0〜23・分 0〜59）。時刻の欄は HTML の元の時刻（✎ の data-orig）で見る。
+      // H:MM でない時刻の欄は対象にしない（board_edit.py では K12 が知らせる）
+      var laterMis = 0;
+      Array.prototype.forEach.call(document.querySelectorAll('.item[data-due]:not([data-sid])'), function (item) {
+        if (!inLaterSection(item) || item.classList.contains('done-item') || item.querySelector('.chip.done')) return;
+        var f = /^(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2})$/.exec(item.getAttribute('data-due') || '');
+        if (!f || +f[4] > 23 || +f[5] > 59) return;
+        var cal = new Date(+f[1], +f[2] - 1, +f[3]);
+        if (cal.getFullYear() !== +f[1] || cal.getMonth() !== +f[2] - 1 || cal.getDate() !== +f[3]) return;
+        var timeEl = item.querySelector('.time');
+        if (!timeEl || tbTimeElBroken(timeEl)) return;
+        var t = /^(\d{1,2}):(\d{2})$/.exec((timeEl.getAttribute('data-orig') || tbTimeText(timeEl)).trim());
+        if (t && +t[1] <= 23 && +t[2] <= 59 && (+t[1]) + ':' + t[2] !== (+f[4]) + ':' + f[5]) laterMis++;
+      });
+      if (laterMis) {
+        msgs.push('「明日以降」に、時刻の欄と実施日（日付のチップ）の時刻が違うタスクがあります（' + laterMis + ' 件）。'
+          + '今日の側へ動かすとき（ドラッグ。一度今日へ移した印の無い行は Deck の日付の切り替えも）は時刻の欄の時刻が使われ、ボードを作り直すと実施日の時刻だけが残ります。どちらの時刻にするかを決めてください。');
+      }
+      // ---- 閉じタグの無い時刻の欄（2026-11-06 新設・直さずに知らせるだけ） ----
+      // <span class="time">0:00 のように時刻の欄が閉じていない行（data-tb-unclosed）。時刻の欄の中に class を持つ要素があるので、
+      // ✎ で時刻を変えられない。欄の中にタイトルやチップが入っている行（tbTimeHasPart）は、「明日以降」へ動かすときに実施日も決められない
+      // （欄の中に入ったのが部品でない class の要素だけの行は、閉じタグの有無によらず決められる＝Deck も同じ。行の鍵は Deck と合うので、D&D・通知・× は効く）。
+      // board_edit.py の警告 K15 と同じ形で、同じく項目ごとに数える（時刻の欄が2つ以上ある行は、どれか1つが閉じていなければ1件）。
+      // 欄が div の行は後ろの項目も中に入れることが多く、上の入れ子（①）にも数えられる。自動収集カード（data-sid）は見ない
+      var unclosedItems = [];
+      Array.prototype.forEach.call(document.querySelectorAll('.item .time[data-tb-unclosed]'), function (el) {
+        var it = el.closest && el.closest('.item');
+        if (it && !it.closest('[data-sid]') && unclosedItems.indexOf(it) < 0) unclosedItems.push(it);
+      });
+      var unclosed = unclosedItems.length;
+      if (unclosed) {
+        msgs.push('時刻の欄の閉じタグが無いタスクがあります（' + unclosed + ' 件）。時刻の欄の中にタイトルやチップなど class を持つ要素が入るため、'
+          + '✎ で時刻を変えられません。欄の中にタイトルやチップが入っている行は、「明日以降」へ動かすときに実施日も決められません。'
+          + '形によっては、今日の予定の未完了の行にあると Deck の日付の切り替えが止まり、翌日のボードが作られないので、今日のうちに直してください。');
+      }
+      var FIX = 'Claude に「ボードを直して」と頼んでください。';
+      if (prev && msgs.length && prev.getAttribute('data-msgs') === msgs.join('')) return;
+      if (prev) prev.parentNode.removeChild(prev);
       if (!msgs.length) return;
       var el = document.createElement('div');
       el.id = 'tb-board-check';
+      el.setAttribute('data-msgs', msgs.join(''));
       el.setAttribute('role', 'status');
       el.className = 'warn';
       var ic = document.createElement('span');
@@ -908,7 +1409,7 @@
       box.appendChild(document.createTextNode(' — ' + msgs.join('')));
       var fx = document.createElement('span');
       fx.className = 'tb-notice-fix';
-      fx.textContent = 'Claude に「ボードを直して」と頼んでください。';
+      fx.textContent = FIX;
       box.appendChild(fx);
       el.appendChild(ic);
       el.appendChild(box);
@@ -923,8 +1424,15 @@
       var n = new Date();
       var next = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1, 0, 0, 20);
       var ms = next - n;
-      if (ms > 0 && ms <= 300000) setTimeout(function () { location.reload(); }, ms);
+      if (ms > 0 && ms <= 300000) setTimeout(function () { tbReload(); }, ms);
     })();
+
+    // 「明日以降」の行か（見出しをさかのぼって見る。D&D の後の並びで判定する）
+    function inLaterSection(item) {
+      var s = item.previousElementSibling;
+      while (s && !s.classList.contains('section-label')) s = s.previousElementSibling;
+      return !!s && s.textContent.trim().indexOf('明日以降') === 0;
+    }
 
     // ---- 時刻トリガー到達の検知（③）: 発火済みはlocalStorageで記憶（リロード耐性） ----
     function checkAlarms(nowMin) {
@@ -933,14 +1441,16 @@
       Array.prototype.forEach.call(document.querySelectorAll('.item'), function (item) {
         var timeEl = item.querySelector('.time');
         if (!timeEl || item.classList.contains('done-item') || item.querySelector('.chip.done')) return;
-        var t = parseHM(timeEl.textContent);
+        // 「明日以降」の行は通知の対象にしない（Deck の read_board_alarms と同じ。時刻の欄が残っていても今日のその時刻に出さない）
+        if (inLaterSection(item)) return;
+        var t = parseHM(tbTimeText(timeEl));
         if (t === null) return;
         // 発火済みキーは「実効時刻|タイトル」で持つ（Deck の read_board_alarms と同一定義）。
         // taskKey は data-orig ＝元の時刻を使うため、時刻を変更しても同じキーのままになり、
         // 変更前に発火済みとして記録された項目が新しい時刻でトーストを出せない。
         // 2026-08-04、音は鳴るのにポップアップだけ出ない事象として実測された。
         var titleEl = item.querySelector('.task-title');
-        var key = (timeEl.textContent.trim() + '|' + (titleEl ? titleEl.textContent : '')).trim();
+        var key = (tbTimeText(timeEl).trim() + '|' + tbTitleText(titleEl)).trim();
         if (t <= nowMin && fired.indexOf(key) < 0) {
           fired.push(key); changed = true;
           if (nowMin - t <= 5) { // 開くのが遅れた過去分はまとめて出さない
@@ -948,32 +1458,51 @@
             // ページをクリック済みのときだけ二重に鳴る。
             // この判定は Deck の有無に関わらず常に走る。Deck 稼働中は Deck 経由（3秒周期）が
             // 先に描画することが多いが、同じキーなら showNotification が弾くので二重には出ない。
-            showNotification(key, '⏰ ' + timeEl.textContent.replace(' ✎', '') + ' ' + (titleEl ? titleEl.textContent : ''));
+            showNotification(key, '⏰ ' + tbTimeText(timeEl).replace(' ✎', '') + ' ' + (titleEl ? titleEl.textContent : ''));
           }
         }
       });
       if (changed) LS.set('fired:' + dateKey, JSON.stringify(fired));
     }
 
-    // ---- 時刻の手動変更（④）: localStorageに日付単位で保存・✎印 ----
+    // ---- 時刻の手動変更（④）: 持ち主は Deck（timesMap）・✎印 ----
     function renderTimes() {
-      var ovr = readJSON('ovr:' + dateKey, {});
+      var ovr = timesMap || timesLast || {};
+      var can = timesCan();
+      var locked = timesLoaded && !timesBusy && !can;
+      var msg = can ? 'クリックで時刻を変更' : !locked ? '' : TB_LIVE.live ? TIME_MSG_LOCKED : TIME_MSG_NOT_TODAY;
       Array.prototype.forEach.call(document.querySelectorAll('.item .time'), function (timeEl) {
-        if (timeEl.querySelector('input')) return;
+        if (tbTimeElBroken(timeEl)) return;
         var item = timeEl.closest('.item');
-        var v = ovr[taskKey(item)];
+        // 「明日以降」の行は ✎ を受けず、元の時刻（HTML の時刻の欄）を出す（Deck の上書きは今日の側の行にだけ効くため。
+        // 同じ日に今日の側へ戻せば、上書きはまた表示と通知に使われる＝Deck の read_board_alarms と同じ）
+        var later = inLaterSection(item);
+        timeEl.style.cursor = can && !later ? 'pointer' : '';
+        timeEl.title = later ? TIME_MSG_LATER : msg;
+        timeEl.classList.toggle('time-locked', locked || later);
+        if (timeEl.querySelector('input')) return;
+        var v = later ? null : ovr[taskKey(item)];
         timeEl.textContent = v || timeEl.getAttribute('data-orig');
         timeEl.classList.toggle('overridden', !!v);
       });
     }
     function makeTimesEditable() {
-      Array.prototype.forEach.call(document.querySelectorAll('.item .time'), function (timeEl) {
-        timeEl.setAttribute('data-orig', timeEl.textContent.trim());
-        timeEl.style.cursor = 'pointer';
-        timeEl.title = 'クリックで時刻を変更';
+      Array.prototype.forEach.call(document.querySelectorAll('.item .time'), bindTimeEl);
+      // D&D で実施日の来た行に足した時刻の欄にも、同じ ✎ を結ぶ（shapeDueMove が呼ぶ）
+      tbBindTimeEl = function (timeEl) { bindTimeEl(timeEl); renderTimes(); };
+    }
+    function bindTimeEl(timeEl) {
+        if (tbTimeElBroken(timeEl)) return;
+        timeEl.setAttribute('data-orig', tbTimeText(timeEl).trim());
         timeEl.addEventListener('click', function (ev) {
           ev.stopPropagation();
           if (timeEl.querySelector('input')) return;
+          if (inLaterSection(timeEl.closest('.item'))) { timeToast(TIME_MSG_LATER); return; }
+          if (!timesCan()) {
+            // 読めていない間は開かない（Deck に保存できない変更を受け付けない）。最初の応答を待つ間と操作の途中は黙る
+            if (timesLoaded && !timesBusy) timeToast(TB_LIVE.live ? TIME_MSG_LOCKED : TIME_MSG_NOT_TODAY);
+            return;
+          }
           var item = timeEl.closest('.item');
           var cur = parseHM(timeEl.textContent);
           var inp = document.createElement('input');
@@ -988,16 +1517,10 @@
             committed = true;
             var v = inp.value;
             if (inp.parentNode) timeEl.removeChild(inp);
-            if (v) {
-              var ovr = readJSON('ovr:' + dateKey, {});
-              var key = taskKey(item);
-              var disp = fmtHM(parseHM(v));
-              if (disp === timeEl.getAttribute('data-orig')) delete ovr[key];
-              else ovr[key] = disp;
-              LS.set('ovr:' + dateKey, JSON.stringify(ovr));
-              pushTimeOverrides();  // Deck も新しい時刻で鳴るようにする
-            }
-            renderTimes(); refresh();
+            renderTimes();
+            if (v && tbDayStop(true)) return;   // 開いたまま日付が変わった（送らずに読み直す）
+            if (v) timesOperate(taskKey(item), fmtHM(parseHM(v)), timeEl.getAttribute('data-orig'));
+            else refresh();
           }
           // change では確定しない。type="time" は既存値が入っているため、時の桁を
           // 1つ打った時点で値が妥当になり change が発火してしまい、分まで入力できない
@@ -1006,7 +1529,6 @@
           inp.addEventListener('blur', commit);
           inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') commit(); });
         });
-      });
     }
 
     // ---- 「タスク更新」からの経過表示（相対時刻） ----
@@ -1051,11 +1573,48 @@
       Array.prototype.forEach.call(document.querySelectorAll('.js-auto'), function (el) { el.remove(); });
       Array.prototype.forEach.call(document.querySelectorAll('.next-up'), function (el) { el.classList.remove('next-up'); });
 
+      // 実施日（data-due。board_edit.py の add / set-due が書き、Deck v2.8 の日付の切り替えが見る）を見えるようにする。
+      // 手で書かない（HTML 正本には属性だけがある）。「明日以降」では日付、過ぎていれば知らせ（印のある行〔旧版で戻した行・印を写した行〕・Deck が
+      // 切り替えていない行）。今日の側では「いつの予定か」を出す（一度引き継いだ行で、元の日付が同じならチップが重なるので出さない）。
+      // 今日の側へ移した行は実施日が今日になり、元の実施日は data-due-from にある（Deck v2.11）ので、そちらから「↪ 11/4 22:05 の予定から」と出す。
+      // このチップを出した行には、引き継ぎのチップ（下）を出さない（「↪」のチップは1行に1つ。元の予定の日時のほうが、引き継いだ日より
+      // 元をたどれる。引き継いだ日は元の実施日の日か、その後の日〔日付を決め直した行では前の日のこともある〕）
+      var fromShown = [];
+      Array.prototype.forEach.call(document.querySelectorAll('.item[data-due]:not([data-sid])'), function (item) {
+        var f = /^(\d{4})-(\d{1,2})-(\d{1,2})(?: (\d{1,2}:\d{2}))?$/.exec(item.getAttribute('data-due') || '');
+        if (!f) return;
+        var md = (+f[2]) + '/' + (+f[3]) + (f[4] ? ' ' + f[4] : '');
+        var cls = 'pending', label, fromChip = false;
+        if (inLaterSection(item)) {
+          if (new Date(+f[1], +f[2] - 1, +f[3]) < noticeToday() && !item.querySelector('.chip.done')) { cls = 'hold'; label = md + ' を過ぎました'; }
+          else label = md;
+        } else {
+          var g = /^(\d{4})-(\d{1,2})-(\d{1,2})(?: (\d{1,2}:\d{2}))?$/.exec(item.getAttribute('data-due-from') || '');
+          if (g) {
+            label = '↪ ' + (+g[2]) + '/' + (+g[3]) + (g[4] ? ' ' + g[4] : '') + ' の予定から';
+            fromChip = true;
+          } else {
+            if (item.getAttribute('data-carried-from') === f[1] + '-' + f[2] + '-' + f[3]) return;
+            label = (item.hasAttribute('data-due-moved') ? '↪ ' : '') + md + ' の予定';
+          }
+        }
+        if (!item.querySelector('.chips')) {
+          var title = item.querySelector('.task-title');
+          if (!title) return;
+          var box = document.createElement('div');
+          box.className = 'chips';
+          title.parentNode.appendChild(box);
+        }
+        addChip(item, cls, label, false);
+        if (fromChip) fromShown.push(item);
+      });
+
       // Deck が日付の切り替えで引き継いだタスク（data-carried-from）に、元の日付と元の予定時刻を出す
       // （Deck v2.2。時刻付きの予定は今日中へ移すので、元の時刻はここでしか見えない）
       Array.prototype.forEach.call(document.querySelectorAll('.item[data-carried-from]:not([data-sid])'), function (item) {
         var f = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(item.getAttribute('data-carried-from') || '');
-        if (!f) return;
+        if (!f || fromShown.indexOf(item) >= 0) return;
+        // data-orig-time は data-carried-from と組（引き継いだ日のその行の時刻。Deck v2.12 は data-carried-from を新しく付けるときだけ書く）
         var ot = (item.getAttribute('data-orig-time') || '').trim();
         addChip(item, 'pending', '↪ ' + (+f[2]) + '/' + (+f[3]) + (ot ? ' ' + ot + ' の予定' : '') + 'から', false);
       });
@@ -1065,11 +1624,12 @@
         if (item.classList.contains('done-item') || item.querySelector('.chip.done')) return;
         var timeEl = item.querySelector('.time');
         if (!timeEl) return;
-        var t = parseHM(timeEl.textContent);
+        if (inLaterSection(item)) return;   // 今日の予定ではないので、▶ 次・時刻超過の対象にしない
+        var t = parseHM(tbTimeText(timeEl));
         if (t === null) {
           // 時刻の欄が H:MM として読めない（「9時」等）と、通知音・ポップアップ・時刻超過が黙って
           // 発火しないので、その項目に知らせる。✎ で編集中（入力欄がある）ときは除く
-          if (timeEl.textContent.trim() && !timeEl.querySelector('input')) {
+          if (tbTimeText(timeEl).trim() && !timeEl.querySelector('input')) {
             addChip(item, 'hold', '時刻を読めない', false);
           }
           return;
@@ -1101,7 +1661,8 @@
         var t = parseHM(updEl.textContent);
         relEl.textContent = t === null ? '' : fmtRelative(nowMin - t);
       }
-      checkAlarms(nowMin);
+      // 上書きの地図の最初の結果を待つ（応答の前に元の時刻で通知を出さない）。Deck が無ければすぐ結果が出て、元の時刻で判定する
+      if (timesLoaded) checkAlarms(nowMin);
       applyHidden();
       applyHiddenTasks();  // applyHidden と同じ位置（クラスを付けるだけ）。可視 item を
                            // 数える applyHideDone より必ず前に置く
@@ -1230,7 +1791,7 @@
     // 隠す規則そのものは board.css 側（:root.tb-hide-done .item.done-item:not([data-sid])）にある。
     // ここは「ルート要素のクラスを LS に合わせる」「⚙の件数を書く」「済だけになった
     // セクションに要約行を1本出す」の3つだけを行う。Deck へは何も送らない
-    // （deckPost / soundOperate / pushTimeOverrides / persistMove を呼ばない）。
+    // （deckPost / soundOperate / timesOperate / persistMove を呼ばない）。
     // ルート要素は board.html に存在しない（テンプレに <html> タグが無く、ブラウザが合成する）ため、
     // Claude の update とも Deck の書き換えとも構造上ぶつからない。data-theme と同じ置き場。
     // セクションの走査は renderDeckStatus() と同じ「見出しから nextSibling を次の見出しまで
@@ -1360,11 +1921,12 @@
       if (sTest) sTest.addEventListener('click', function () {
         soundOperate(function (cur) { return cur; }, true);
       });
-      // 発行済みの板の説明文は日付の切り替えでも引き継がれるので、表示のときに今の文へ直す（HTML の正本は変えない）
+      // 発行済みの板の説明文は日付の切り替えでも引き継がれるので、表示のときに今の文へ直す（HTML の正本は変えない）。
+      // 直すのは「通知音は同梱の」を含む版と、「明日以降」の行を除く旨を足す前の版（2026-11-02〜11-05 のテンプレの文そのもの）
       var sDesc = panel && panel.querySelector('.set-note:not(#sound-note)');
-      if (sDesc && sDesc.textContent.indexOf('通知音の設定は Deck に保存され') < 0) {
-        sDesc.textContent = sDesc.textContent.replace('設定はこのブラウザに保存されます。',
-          '通知音の設定は Deck に保存され、どのブラウザで開いても同じです（Deck が動いていないときは変更できません）。それ以外の設定はこのブラウザに保存されます。');
+      var sDescPrev = '通知音は Deck（監視ねこ）が鳴らします（Windows のみ・既定は OFF）。タスクの時刻はクリックで変更できます（変更した時刻には ✎ が付きます。Claude 側の記録も直すときはチャットで伝えてください）。通知音の設定と時刻の変更は Deck に保存されます。Deck が止まっている間は音が鳴らず、どちらも変更できません。ほかの設定はブラウザ毎に保存されます。';
+      if (sDesc && (sDesc.textContent.indexOf('通知音は同梱の') >= 0 || sDesc.textContent.trim() === sDescPrev)) {
+        sDesc.textContent = '通知音は Deck（監視ねこ）が鳴らします（Windows のみ・既定は OFF）。タスクの時刻はクリックで変更できます（「明日以降」の行を除く）（変更した時刻には ✎ が付きます。Claude 側の記録も直すときはチャットで伝えてください）。通知音の設定と時刻の変更は Deck に保存されます。Deck が止まっている間は音が鳴らず、どちらも変更できません。ほかの設定はブラウザ毎に保存されます。';
       }
       var sAnchor = sTest || document.querySelector('[data-sound]') || sToggle;
       if (sAnchor && panel) {
@@ -1378,11 +1940,13 @@
       }
       renderSound();
       soundRefresh();
-      // 時刻の上書きは、このブラウザに今日の記録があるときだけ起動時にも送る。Deck 側だけ再起動した場合や、
-      // Deck 停止中に変えた場合でも、次のリロード（5分以内）で揃う。上書きを全部外すと
-      // `ovr:<日付>` は {} として残るので（✎ の処理）、空の地図が届いて Deck も元の時刻へ戻る。記録の無い
-      // ブラウザが空の地図を送ると、ほかのブラウザで付けた上書きまで消してしまう。
-      if (LS.get('ovr:' + dateKey, null) !== null) pushTimeOverrides();
+      // 以前の版がブラウザに残した ✎ の記録（`tb:ovr:<日付>`）は読まずに消す（Deck の値が正。移行はしない＝2026-11-02
+      // ユーザー決定）。残すと、以前の版の board.js に戻したときにその古い値が Deck へ送られるため。日付の違う記録も消す
+      try {
+        Object.keys(localStorage).forEach(function (k) {
+          if (k.indexOf('tb:ovr:') === 0) localStorage.removeItem(k);
+        });
+      } catch (e) {}
       var uBtn = document.getElementById('unhide-all');
       if (uBtn) uBtn.addEventListener('click', function () { LS.set('hiddenSids', '[]'); applyHidden(); });
       // 表示フィルタ行（済タスクを隠す）。renderOrderUI と同じく実行時に注入する——
@@ -1422,7 +1986,7 @@
       });
       bindToggle('hd-toggle', 'hideDone', '0', applyHideDone);
       var rBtn = document.getElementById('reload-btn');
-      if (rBtn) rBtn.addEventListener('click', function () { location.reload(); });
+      if (rBtn) rBtn.addEventListener('click', function () { tbReload(true); });
     }
 
     var la = document.getElementById('loaded-at');
@@ -1444,7 +2008,8 @@
     renderBoardNotice();  // 過去日の板は Deck の最初の応答を待つので、ここでは出ないことがある
     renderBoardCheck();
     refresh();
-    setInterval(refresh, 30000);
+    timesRefresh();   // 応答を受けて描き直し、判定し直す（別のブラウザの変更も 30 秒ごとに映す）
+    setInterval(function () { timesRefresh(); refresh(); }, 30000);
     // 通知の取得は 3 秒周期。Deck の検知からトースト表示までのずれをこの範囲に収める
     // （refresh の 30 秒周期のままだと最大 30 秒ずれる）。読み込み直後にも1回取りに行き、
     // リロードで消えた未確認トーストを復元する。
@@ -1458,6 +2023,11 @@
     // 逃がすので同期ハンドラ（移動・recalc）の完了後に走る。取りこぼしても
     // 次の refresh（最大30秒）で回収される。
     document.addEventListener('drop', function () { setTimeout(applyHideDone, 0); });
+    // D&D で「明日以降」へ入った行・出た行の ✎ の受け付けと、ボードの点検（「明日以降」の時刻の食い違い）を作り直す。
+    // 読み込みの直後にも1回（localStorage に残った移動を D&D の IIFE が当てた後）
+    function afterMoves() { renderTimes(); renderBoardCheck(); }
+    setTimeout(afterMoves, 0);
+    document.addEventListener('drop', function () { setTimeout(afterMoves, 0); });
   })();
 
   // 日付ホバーのカレンダーポップアップ（◀▶で月移動・再ホバーで当月に戻る）
@@ -1603,7 +2173,7 @@
     function key(it) {
       var t = it.querySelector('.time');
       var ti = it.querySelector('.task-title');
-      return ((t ? (t.getAttribute('data-orig') || t.textContent) : '') + '|' + (ti ? ti.textContent : '')).trim();
+      return ((t ? (t.getAttribute('data-orig') || tbTimeText(t).trim()) : '') + '|' + tbTitleText(ti)).trim();
     }
     function getGroups() {
       var first = document.querySelector('.board .section-label') || document.querySelector('.section-label');
@@ -1650,6 +2220,212 @@
       if (bar) bar.style.width = (M ? Math.round(N / M * 100) : 0) + '%';
     }
 
+    // ---- 実施日のある行の形（Deck v2.13 の _due_moved_shape と同じ規則・2026-11-05・2026-11-06） ----
+    // 「明日以降」から今日の側へ動かした、実施日（data-due）が読めて済でない行を、一度移した印の有無・実施日が先の日かによらず、
+    // Deck の日付の切り替え・D&D の反映・board_edit.py の move と同じ形にする。行の時刻は、時刻の欄が H:MM（時 0〜23・分 0〜59）
+    // ならその時刻、無ければ実施日の時刻。行き先が今日の予定で実施日が今日で時刻があれば、時刻の欄をその時刻にして flat を外す。
+    // それ以外は時刻の欄を外して flat を付ける（前の日・先の日の時刻を今日のその時刻に鳴らさない）。外した時刻の欄は data-orig-time に残さない
+    // （行の時刻は data-due か data-due-from に残る。ただし H:MM でない時刻の欄の文字と、data-due-from が既にある行で時刻の欄の時刻がその時刻と違うときの時刻の欄の時刻は、どこにも残らない。
+    // data-orig-time は Deck の日付の切り替えが data-carried-from と組で書く＝Deck v2.12）。
+    // 状態チップが無ければ「未」を足す。実施日を今日にし（時刻の欄を付けるならその時刻を含め、付けないなら
+    // 日付だけ）、元の実施日〔元の実施日の日付と行の時刻・Deck v2.12〕を data-due-from に残し、一度移した印を付ける（どちらも既にあれば変えない）。先の日の行
+    // （前もって今日の側へ動かした行）も今日の行として同じ形にする（時刻は付かない・Deck v2.13。v2.12 までは日付も印も変えなかった）。
+    // 画面の DOM だけを直す（HTML 正本は Deck が同じ形に書く）。Deck に届かず localStorage に残した移動を読み込みで再び当てるときも使う。
+    // 時刻の欄が2つ以上ある行は印だけを付ける（Deck と同じ）
+    function dueISO(d) {
+      return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+    }
+    function sectionOf(item) {
+      var s = item.previousElementSibling;
+      while (s && !(s.classList && s.classList.contains('section-label'))) s = s.previousElementSibling;
+      return s ? canon(s.textContent) : null;
+    }
+    // 判定は Deck にそろえる: 実施日は YYYY-MM-DD か YYYY-MM-DD H:MM で、暦にある日・時 0〜23・分 0〜59 のときだけ読む
+    // （parse_due_value）。時刻の欄が2つ以上ある行と、中に行の部品のある時刻の欄（tbTimeHasPart。閉じタグの無い欄に、ブラウザが
+    // 後ろの要素を取り込んだ形など。Deck では形を作れない）は印だけを付ける。状態チップの判定は span.chip の done・active・pending・hold、
+    // 「未」の置き場は、最初の属性が class でその値がちょうど "chips" の div の末尾、無ければ行の最後の div の末尾に chips 欄ごと
+    // （_insert_status_chip）。属性の順を見るのは、Deck の <div class="chips" の照合に合わせるため（<div id=… class="chips"> は
+    // chips 欄と見ない）。ただし DOM は引用符・空白・大文字を正規化するので、一致するのは板の書き手が書く正規の形
+    // （<div class="chips"> を二重引用符・小文字・属性の先頭で書いた形）についてだけ。class='chips' のような形では Deck と違いうる
+    function shapeDueMove(item, toSec) {
+      var f = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{1,2}):(\d{2}))?$/.exec(item.getAttribute('data-due') || '');
+      if (!f || item.querySelector('.chip.done')) return;
+      var y = +f[1], mo = +f[2], d = +f[3];
+      var cal = new Date(y, mo - 1, d);
+      if (cal.getFullYear() !== y || cal.getMonth() !== mo - 1 || cal.getDate() !== d) return;   // 暦に無い日（Deck も読まない）
+      if (f[4] !== undefined && (+f[4] > 23 || +f[5] > 59)) return;
+      var today = dueISO(new Date());
+      var dueDay = f[1] + '-' + f[2] + '-' + f[3];
+      var dueTime = f[4] !== undefined ? (+f[4]) + ':' + f[5] : null;
+      var when = dueTime;
+      var markIt = dueDay <= today && !item.hasAttribute('data-due-moved');
+      var times = item.querySelectorAll('.time');
+      var broken = times.length === 1 && tbTimeHasPart(times[0]);
+      // 形を作れない行は、実施日の来た印の無い行にだけ印を付ける（Deck の _mark_due_moved と同じ）
+      if (times.length > 1 || broken) { if (markIt) item.setAttribute('data-due-moved', today); return; }
+      var holder = null;
+      for (var c = item.lastElementChild; c; c = c.previousElementSibling) {
+        if (c.tagName === 'DIV' && !(c.classList && c.classList.contains('time'))) { holder = c; break; }
+      }
+      var chipsEl = null;
+      Array.prototype.forEach.call(item.querySelectorAll('div'), function (dv) {
+        if (!chipsEl && dv.attributes.length && dv.attributes[0].name === 'class' && dv.attributes[0].value === 'chips') chipsEl = dv;
+      });
+      var hasChip = Array.prototype.some.call(item.querySelectorAll('span.chip:not(.js-auto)'), function (sp) {
+        return sp.classList.contains('done') || sp.classList.contains('active') || sp.classList.contains('pending') || sp.classList.contains('hold');
+      });
+      if (!hasChip && !chipsEl && !holder) { if (markIt) item.setAttribute('data-due-moved', today); return; }   // 未を置けない（Deck も印だけ）
+      var oldTime = null;
+      if (times.length === 1) {
+        oldTime = (times[0].getAttribute('data-orig') || tbTimeText(times[0])).trim();   // 鍵と同じ読み方（Deck の _time_text・v2.15）
+        times[0].parentNode.removeChild(times[0]);
+        var hm = /^(\d{1,2}):(\d{2})$/.exec(oldTime);
+        if (hm && +hm[1] <= 23 && +hm[2] <= 59) when = (+hm[1]) + ':' + hm[2];   // 範囲外の時刻の欄は使わない（Deck の _valid_hm）
+      }
+      if (!hasChip) {
+        if (!chipsEl) {
+          chipsEl = document.createElement('div');
+          chipsEl.className = 'chips';
+          holder.appendChild(chipsEl);
+        }
+        var chip = document.createElement('span');
+        chip.className = 'chip pending';
+        chip.textContent = '未';
+        chipsEl.appendChild(chip);
+      }
+      var scheduled = when !== null && dueDay === today && toSec === '今日の予定';
+      item.classList.toggle('flat', !scheduled);
+      // 実施日を今日にし（時刻の欄を付けるならその時刻を含め、付けないなら日付だけ）、元の実施日を data-due-from に残す（Deck v2.11。
+      // 時刻は行の時刻〔時刻の欄が H:MM ならそれ、無ければ実施日の時刻〕・Deck v2.12）。先の日の行も今日の行として扱い、同じく
+      // 今日にして印を付ける（時刻は付かない＝scheduled は実施日が今日のときだけ。Deck v2.13・2026-11-06 ユーザー決定）
+      item.setAttribute('data-due', today + (scheduled ? ' ' + when : ''));
+      if (!item.hasAttribute('data-due-moved')) item.setAttribute('data-due-moved', today);
+      if (!item.hasAttribute('data-due-from')) item.setAttribute('data-due-from', dueDay + (when !== null ? ' ' + when : ''));
+      if (scheduled) {
+        var t = document.createElement('div');
+        t.className = 'time';
+        t.textContent = when;
+        t.setAttribute('data-orig', when);   // ✎ の表示（renderTimes）は data-orig を元の時刻として読む
+        item.insertBefore(t, item.firstChild);
+        if (tbBindTimeEl) tbBindTimeEl(t);    // ✎ のクリックを結ぶ（読み直しを待たせない）
+      }
+    }
+
+    // ---- 今日の側から「明日以降」へ動かす行の実施日（Deck v2.13 の _later_due_shape と同じ形・2026-11-06 ユーザー決定） ----
+    // 実施日は利用者が決める（日付〔時刻は任意〕か未定＝null）。印（data-due-moved）と元の実施日（data-due-from）は外す（その日に
+    // Deck が今日の側へ移す）。行の時刻は1つ: 時刻の欄が1つある行は、実施日に時刻があれば時刻の欄をその時刻にし、無ければ外す。
+    // 時刻の欄の無い行には足さない。未定は時刻の欄を変えない。画面の DOM だけを直す（HTML 正本は Deck が同じ形に書く）。
+    // 中に行の部品がある時刻の欄（tbTimeHasPart。閉じタグの無い欄など）が1つある行に日付を当てる形は作れない（Deck の _later_due_shape も
+    // None を返し、D&D の反映は 400 になる）ので、その行は変えずに false を返す（未定は Deck も時刻の欄に触れないので当てる）。
+    // 残る時刻の欄は ✎ の上書きを外して元の時刻を出す（「明日以降」の行は ✎ を受けない＝renderTimes と同じ。✎ の跡の overridden を
+    // 残さない）
+    function laterDueBlocked(item) {
+      var times = item.querySelectorAll('.time');
+      return times.length === 1 && tbTimeHasPart(times[0]);
+    }
+    function setLaterDue(item, due) {
+      if (due !== null && laterDueBlocked(item)) return false;
+      ['data-due', 'data-due-moved', 'data-due-from'].forEach(function (a) { item.removeAttribute(a); });
+      var times = item.querySelectorAll('.time');
+      if (due !== null) item.setAttribute('data-due', due);
+      if (times.length === 1 && !tbTimeHasPart(times[0])) {
+        var hm = due !== null ? / (\d{1,2}:\d{2})$/.exec(due) : null;
+        if (due !== null && !hm) {
+          times[0].parentNode.removeChild(times[0]);
+        } else {
+          var shown = hm ? hm[1] : times[0].getAttribute('data-orig');
+          if (shown !== null) times[0].textContent = shown;
+          if (hm) times[0].setAttribute('data-orig', hm[1]);
+          times[0].classList.remove('overridden');
+        }
+      }
+      item.classList.toggle('flat', !item.querySelector('.time'));
+      return true;
+    }
+    function hmOf(text) {
+      var m = /^(\d{1,2}):(\d{2})$/.exec((text || '').trim());
+      return m && +m[1] <= 23 && +m[2] <= 59 ? (+m[1]) + ':' + m[2] : '';
+    }
+    // 実施日を聞く。決めたら done("YYYY-MM-DD" か "YYYY-MM-DD H:MM" か null＝未定)、やめたら呼ばない。
+    // 初めの値: 元の予定（data-due-from）が明日以後ならその日時、時刻はそれが無ければ行の時刻の欄（H:MM）
+    function askLaterDue(item, done) {
+      var now = new Date();
+      var today = dueISO(now);
+      var tomorrow = dueISO(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+      var g = /^(\d{4}-\d{2}-\d{2})(?: (\d{1,2}:\d{2}))?$/.exec(item.getAttribute('data-due-from') || '');
+      var plan = g && g[1] > today ? g : null;
+      var tEl = item.querySelector('.time');
+      var tm = (plan && plan[2]) || (tEl ? hmOf(tEl.getAttribute('data-orig') || tbTimeText(tEl)) : '');
+      var title = item.querySelector('.task-title');
+      var dlg = document.createElement('dialog');
+      dlg.className = 'later-due';
+      dlg.style.cssText = 'border:1px solid #999;border-radius:8px;padding:14px 16px;font:inherit;max-width:22em';
+      var head = document.createElement('p');
+      head.style.cssText = 'margin:0 0 8px;font-weight:bold';
+      head.textContent = '「' + (title ? title.textContent : '') + '」を明日以降へ';
+      var row = document.createElement('p');
+      row.style.cssText = 'margin:0 0 6px';
+      var d = document.createElement('input');
+      d.type = 'date'; d.min = tomorrow; d.value = plan ? plan[1] : '';
+      d.setAttribute('aria-label', '実施日');
+      var t = document.createElement('input');
+      t.type = 'time'; t.value = tm ? ('0' + tm).slice(-5) : '';
+      t.setAttribute('aria-label', '時刻（任意）');
+      var dl = document.createElement('label'); dl.textContent = '実施日 '; dl.appendChild(d);
+      var tl = document.createElement('label'); tl.textContent = ' 時刻（任意） '; tl.appendChild(t);
+      row.appendChild(dl); row.appendChild(tl);
+      var msg = document.createElement('p');
+      msg.className = 'later-due-msg';
+      msg.style.cssText = 'margin:0 0 8px;min-height:1.2em;color:#c00;font-size:90%';
+      var btns = document.createElement('p');
+      btns.style.cssText = 'margin:0;display:flex;gap:6px;flex-wrap:wrap';
+      function button(label, cls) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = cls; b.textContent = label;
+        btns.appendChild(b);
+        return b;
+      }
+      var ok = button('この日にする', 'later-due-ok');
+      var none = button('未定にする', 'later-due-none');
+      var cancel = button('やめる', 'later-due-cancel');
+      var blocked = laterDueBlocked(item);
+      if (blocked) {
+        // 閉じタグの無い時刻の欄の行は、日付を決めて移せない（Deck も断る）。未定とやめるは使える
+        d.disabled = true; t.disabled = true; ok.disabled = true;
+        msg.textContent = 'この行は時刻の欄の形が崩れているため、日付を決めて移せません。「未定にする」で移すか、行を直すよう Claude に伝えてください';
+      }
+      dlg.appendChild(head); dlg.appendChild(row); dlg.appendChild(msg); dlg.appendChild(btns);
+      var closed = false;
+      function finish(due) {
+        if (closed) return;
+        closed = true;
+        if (dlg.open && dlg.close) dlg.close();
+        if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
+        if (due !== undefined) done(due);
+      }
+      ok.addEventListener('click', function () {
+        if (blocked) return;
+        if (TB_LIVE.live && tbDayOf(new Date()) !== TB_LOAD_DAY) { finish(); tbDayStop(true); return; }   // 開いたまま日付が変わった（送らずに読み直す）
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d.value) || d.value <= today) {
+          msg.textContent = '明日以後の日付を入れてください（決まっていなければ「未定にする」）';
+          d.focus();
+          return;
+        }
+        var hm = hmOf(t.value);
+        if (t.value && !hm) { msg.textContent = '時刻を読めません'; t.focus(); return; }
+        finish(d.value + (hm ? ' ' + hm : ''));
+      });
+      none.addEventListener('click', function () {
+        if (TB_LIVE.live && tbDayOf(new Date()) !== TB_LOAD_DAY) { finish(); tbDayStop(true); return; }
+        finish(null);
+      });
+      cancel.addEventListener('click', function () { finish(); });
+      dlg.addEventListener('cancel', function (e) { e.preventDefault(); finish(); });   // Esc はやめると同じ
+      document.body.appendChild(dlg);
+      if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+      (blocked ? none : plan ? ok : d).focus();
+    }
+
     // ---- 移動の再適用（記録順にリプレイ） ----
     function replayMoves() {
       readJSON('mv:' + dateKey, []).forEach(function (m) {
@@ -1657,6 +2433,11 @@
         if (!item) return;
         var g = findGroup(getGroups(), m.sec);
         if (!g) return;
+        var fromSec = sectionOf(item);
+        if (fromSec === '明日以降' && m.sec !== '明日以降') shapeDueMove(item, m.sec);
+        // 当てられない形の行（setLaterDue が false）は動かさない（Deck も 400 で動かさない）
+        if ((fromSec === '今日の予定' || fromSec === '今日中') && m.sec === '明日以降' && m.due !== undefined
+          && setLaterDue(item, m.due) === false) return;
         var label = g.nodes[0], parent = label.parentNode;
         if (m.head) { parent.insertBefore(item, label.nextSibling); return; }
         var target = null;
@@ -1798,23 +2579,50 @@
       var t = e.target && e.target.closest ? e.target.closest('[data-sec]') : null;
       if (!t) return;
       e.preventDefault();
-      var rec = { k: key(dragged), sec: t.getAttribute('data-sec'), before: null };
-      var parent = t.parentNode;
-      if (t.classList.contains('item')) {
-        if (t === dragged) { clearHints(); return; }
-        parent.insertBefore(dragged, t);
-        rec.before = key(t);
-      } else if (t.classList.contains('section-label')) {
-        parent.insertBefore(dragged, t.nextSibling);
-        rec.head = true;
-      } else {
-        parent.insertBefore(dragged, t);
+      var it = dragged;
+      if (t === it) { clearHints(); return; }
+      var rec = { k: key(it), sec: t.getAttribute('data-sec'), before: null };
+      var fromSec = sectionOf(it);
+      var fromLater = fromSec === '明日以降';
+      if (TB_LIVE.live && tbDayChanged()) { clearHints(); tbDayStop(true); return; }   // 開いたまま日付が変わった（動かさずに止める）
+      function place() {
+        var parent = t.parentNode;
+        if (t.classList.contains('item')) {
+          parent.insertBefore(it, t);
+          rec.before = key(t);
+        } else if (t.classList.contains('section-label')) {
+          parent.insertBefore(it, t.nextSibling);
+          rec.head = true;
+        } else {
+          parent.insertBefore(it, t);
+        }
       }
+      // 今日の側から「明日以降」へ落とした行は、実施日（日付か未定）を聞いてから動かす。やめたら動かさない
+      // （2026-11-06 ユーザー決定・Deck v2.13。rec.due を Deck の D&D の反映と localStorage の再適用が使う）
+      if (rec.sec === '明日以降' && (fromSec === '今日の予定' || fromSec === '今日中')) {
+        clearHints();
+        askLaterDue(it, function (due) {
+          // 聞いている間に画面が組み替わった（自動の読み直しは入力欄を閉じるまで延ばす＝tbReload ので、ふつうは起きない）
+          if (!it.isConnected || !t.isConnected) return;
+          if (due !== null && laterDueBlocked(it)) return;   // 当てられない形の行（入力欄で日付を選べないので、ふつうは来ない）
+          place();
+          rec.due = due;
+          setLaterDue(it, due);
+          persistMove(rec);
+          refreshMarks(); recalc();
+          document.dispatchEvent(new Event('drop'));   // 済の隠し・表示の整え（drop を待つ他の処理）を動かす
+        });
+        return;
+      }
+      place();
+      // 実施日の来た行は Deck と同じ形にする（rec.k は形を変える前の key＝Deck・localStorage の再適用が探す key）
+      if (fromLater && rec.sec !== '明日以降') shapeDueMove(it, rec.sec);
       persistMove(rec);
       clearHints(); refreshMarks(); recalc();
     });
     // Deck常駐時（127.0.0.1 の受信ポート・board.html の接続情報を deckFetch が使う）はHTML正本へ自動反映し、localStorageには保存しない。
     // Deck未対応・停止中・タイムアウト・別のボードの Deck だけが応答した時は従来どおりlocalStorage保存にフォールバック。
+    // 例外は、今日のボードとして読み込んだまま日付が変わったページ（2026-11-06）: Deck へも localStorage へも残さずに読み直す（persistMove の tbDayStop）。
     // Deck が応答したのに保存できなかった（200 以外）ときと、待つのをやめた（タイムアウト）ときは、画面に知らせる
     // （2026-10-30 ユーザー判断。それまでは黙って localStorage に逃がしていた）。Deck に接続できない（止まっている）ときは
     // 知らせない——監視ねこの行が Deck の停止を出す。Deck v2.6 は D&D を受けてから 1 秒以内に書けなければ書かないので、
@@ -1848,6 +2656,7 @@
       // ここは deckPost を通らない独立した書き込み経路なので、同じ判定を明示的に置く。
       // localStorage 側の保存はブラウザ内で完結するので残す（画面上の移動は従来どおり効く）。
       if (!TB_LIVE.live) { tbBlockWrite('/board/move'); persistLocal(); return; }
+      if (tbDayStop(true)) return;   // 開いたまま日付が変わった（Deck へも localStorage へも残さずに読み直す）
       var p = deckFetch('/board/move', { method: 'POST', body: JSON.stringify(rec) });
       if (!p) { persistLocal(); return; }
       p.then(function (res) {
