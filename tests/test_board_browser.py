@@ -6,7 +6,10 @@
 
 実行: python -m unittest discover -s tests -v   （リポジトリの直下で）
 DOM を出せる Chrome も Edge も見つからなければ飛ばす。Chrome があれば Chrome で走る。別のブラウザで走らせるときは、環境変数 TB_TEST_BROWSER に
-実行ファイルのパスを入れる（指したものが動かないときは飛ばさずに落ちる。Edge は Application フォルダの中の版のフォルダにある msedge.exe を指す）。
+実行ファイルのパスを入れる（指したものが動かないときは飛ばさずに落ちる）。
+Edge は、互換モードの下で起こされたと見ると自分を起こし直し、起こし直した側は標準出力を引き継がないので、
+--dump-dom が何も出さずに戻る（実行ファイルの互換性の設定〔HIGHDPIAWARE 等〕や、親から継いだ環境変数 __COMPAT_LAYER で起きる）。
+そのため Edge には --edge-skip-compat-layer-relaunch を足して起こす（browser_cmd）。
 すべて一時フォルダで行い、Deck の受信は 18737 以降の臨時のポートだけを使う
 （板の接続情報もそのポートを指すので、本番の 8737〜8746 へは送らない）。プロファイルも一時フォルダに作る。
 """
@@ -51,16 +54,25 @@ def edge_candidates(app):
     return [os.path.join(app, v, "msedge.exe") for v in versions] + [os.path.join(app, "msedge.exe")]
 
 
+def browser_cmd(exe, profile, *args):
+    """ヘッドレスで起こすコマンド。Edge には、互換モードを抜けるための起こし直しをさせない指定を足す
+    （起こし直すと --dump-dom の出力が試験に届かない。モジュールの docstring）。"""
+    cmd = [exe, "--headless=new", "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
+           "--disable-extensions"]
+    if os.path.basename(exe).lower() == "msedge.exe":
+        cmd.append("--edge-skip-compat-layer-relaunch")
+    return cmd + list(args)
+
+
 def dumps_dom(exe):
-    """そのブラウザが --dump-dom で DOM を出せるか（Edge の Application 直下の msedge.exe は何も出さずに戻る）。"""
+    """そのブラウザが --dump-dom で DOM を出せるか。"""
     d = tempfile.mkdtemp(prefix="tb-browser-probe-")
     try:
         probe = os.path.join(d, "probe.html")
         with open(probe, "w", encoding="utf-8") as f:
             f.write("<!doctype html><title>probe</title>")
-        r = subprocess.run([exe, "--headless=new", "--user-data-dir=" + os.path.join(d, "profile"), "--no-first-run",
-                            "--no-default-browser-check", "--disable-extensions", "--dump-dom",
-                            pathlib.Path(probe).as_uri()], capture_output=True, timeout=60)
+        r = subprocess.run(browser_cmd(exe, os.path.join(d, "profile"), "--dump-dom", pathlib.Path(probe).as_uri()),
+                           capture_output=True, timeout=60)
         return b"</html>" in r.stdout
     except (OSError, subprocess.SubprocessError):
         return False
@@ -175,11 +187,16 @@ class BrowserCase(unittest.TestCase):
             return cand
         self.fail("臨時のポートを取れない")
 
-    def start_deck(self, enabled=True, stype="chime", ovr=None):
+    def start_deck(self, enabled=True, stype="chime", ovr=None, pending=None):
+        """pending を渡すと、今日の未確認の通知として sound.json に積んでから起こす（本物の SoundStore が読み、確認で外す）。"""
         today = datetime.date.today().strftime("%Y-%m-%d")
+        data = {"enabled": enabled, "type": stype, "ovr_date": today,
+                "ovr": {KEY: "23:30"} if ovr is None else ovr}
+        if pending is not None:
+            data["pending_date"] = today
+            data["pending"] = pending
         with open(self.sound, "w", encoding="utf-8") as f:
-            json.dump({"enabled": enabled, "type": stype, "ovr_date": today,
-                       "ovr": {KEY: "23:30"} if ovr is None else ovr}, f, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False)
         # 確かめずに受信のソケットそのもので取りにいき、取れなければ次へ（取れたソケットがそのまま押さえになる）
         for cand in range(18737, 18837):
             self.server = dw.start_move_server(self.board, dw.SoundStore(self.sound), port=cand, token=TOKEN,
@@ -203,6 +220,24 @@ class BrowserCase(unittest.TestCase):
         with open(self.sound, encoding="utf-8") as f:
             d = json.load(f)
         return d.get("enabled"), d.get("type"), d.get("ovr")
+
+    def pending_keys(self):
+        """sound.json に残っている未確認の通知の鍵（本物の SoundStore が書いた順）。"""
+        with open(self.sound, encoding="utf-8") as f:
+            d = json.load(f)
+        return [p.get("key") for p in d.get("pending", [])]
+
+    def spy_ack(self):
+        """本物の SoundStore.ack をそのまま呼び、渡された鍵だけを記録する（未確認から外すのは本物の ack）。"""
+        acked = []
+        orig = dw.SoundStore.ack
+
+        def spy(store, keys):
+            acked.extend(keys)
+            return orig(store, keys)
+        dw.SoundStore.ack = spy
+        self.addCleanup(setattr, dw.SoundStore, "ack", orig)
+        return acked
 
     def write_board(self, port=None, extra="", date=None, key=True, time="23:59", rows=""):
         today = datetime.date.today()
@@ -247,10 +282,9 @@ class BrowserCase(unittest.TestCase):
         ブラウザが起動しない・board.js が動かないと、ここで落とす（何も起きないことを確かめる試験が素通りしないように）。
         path に http: の URL を渡すと、その URL を開く（Deck が配った板・v2.9）。"""
         url = path if path.startswith("http:") else pathlib.Path(path).as_uri()
-        r = subprocess.run([BROWSER, "--headless=new", "--user-data-dir=" + self.profile, "--no-first-run",
-                            "--no-default-browser-check", "--disable-extensions", "--disable-sync",
-                            "--disable-background-networking", "--disable-component-update",
-                            "--virtual-time-budget=%d" % budget, "--dump-dom", url],
+        r = subprocess.run(browser_cmd(BROWSER, self.profile, "--disable-sync", "--disable-background-networking",
+                                       "--disable-component-update", "--virtual-time-budget=%d" % budget,
+                                       "--dump-dom", url),
                            capture_output=True, timeout=90)
         dom = r.stdout.decode("utf-8", "replace")
         self.assertIn("</html>", dom, "ブラウザが DOM を返さない: rc=%s" % r.returncode)
@@ -1477,15 +1511,11 @@ class TestServedBoard(BrowserCase):
         self.assertEqual(m.group(1), "23:30")
 
     def test_notification_ack_reaches_deck(self):
-        """Deck の未確認の通知が配った板に出て、閉じると確認（POST /notifications/ack）が Deck に届く。"""
-        acked = []
+        """Deck の未確認の通知が配った板に出て、閉じると確認（POST /notifications/ack）が Deck に届き、sound.json の未確認から外れる。"""
+        acked = self.spy_ack()
         item = {"key": KEY, "time": "23:59", "title": "試験", "at": "00:00:01"}
-        o_p, o_a = dw.SoundStore.pending, dw.SoundStore.ack
-        dw.SoundStore.pending = lambda s: [] if acked else [dict(item)]
-        dw.SoundStore.ack = lambda s, keys: (acked.extend(keys), len(keys))[1]
-        self.addCleanup(setattr, dw.SoundStore, "pending", o_p)
-        self.addCleanup(setattr, dw.SoundStore, "ack", o_a)
-        self.start_deck()
+        self.start_deck(pending=[item])
+        self.assertEqual(self.pending_keys(), [KEY])
         self.write_board(rows=WATCH, extra=(
             "<script>setTimeout(function(){var t=document.querySelector('#toast-area .toast');"
             "document.documentElement.setAttribute('data-t',t?t.textContent:'none');if(t)t.click();"
@@ -1497,6 +1527,7 @@ class TestServedBoard(BrowserCase):
         self.assertIn("試験", m.group(1))                    # 未確認の通知が出た
         self.assertEqual(POSTS.count("/notifications/ack"), 1)
         self.assertEqual(acked, [KEY])                       # 閉じた通知の確認が Deck に届いた
+        self.assertEqual(self.pending_keys(), [])            # 本物の SoundStore が未確認から外して保存した
         self.assertIn('data-after="0"', dom)                 # 確認の後は出し直さない
 
     def test_not_today_notice_uses_local_text(self):
@@ -2516,14 +2547,9 @@ class TestLaterDueAsk(BrowserCase):
 
     def test_day_change_ack_is_sent_after_reload_and_not_shown_again(self):
         """日付が変わった後に通知を閉じると、その場では確認を送らずに読み直し、読み直した後のページが確認を送る（閉じた通知を出し直さない）。"""
-        acked = []
+        acked = self.spy_ack()
         item = {"key": "15:00|会議", "time": "15:00", "title": "会議", "at": "00:00:01"}
-        o_p, o_a = dw.SoundStore.pending, dw.SoundStore.ack
-        dw.SoundStore.pending = lambda s: [] if acked else [dict(item)]
-        dw.SoundStore.ack = lambda s, keys: (acked.extend(keys), len(keys))[1]
-        self.addCleanup(setattr, dw.SoundStore, "pending", o_p)
-        self.addCleanup(setattr, dw.SoundStore, "ack", o_a)
-        self.start_deck()
+        self.start_deck(pending=[item])
         self.write_board(rows=self.rows(), extra=self.SCRIPT % (
             "if(n===1){setTimeout(function(){var t=document.querySelector('#toast-area .toast');"
             "sessionStorage.setItem('t1',t?t.textContent:'none');tbShift(86400000);if(t)t.click();},5000);}"
@@ -2536,9 +2562,14 @@ class TestLaterDueAsk(BrowserCase):
         self.assertIn("会議", t1)                                  # 前のページでは出ていた
         self.assertNotIn("会議", shown)                            # 読み直した後には出ない
         self.assertEqual(acked, ["15:00|会議"])                    # 読み直した後のページが1回だけ送った
+        self.assertEqual(self.pending_keys(), [])                  # 本物の SoundStore が未確認から外した
 
     def fake_notifications(self, pending):
-        """Deck の未確認の通知を pending(呼ばれた回数) で返し、確認された鍵を返すリストに積む。"""
+        """Deck の未確認の通知を pending(呼ばれた回数) で返し、確認された鍵を返すリストに積む。
+
+        SoundStore を差し替える道具。未確認の通知が答えの回ごとに現れたり消えたりする並びは、本物の SoundStore を
+        差し替えずには作れないので、その並びが要る試験（test_carried_ack_applies_to_first_answer_only）だけに使う。
+        確認が本物の SoundStore に届いて sound.json から外れることは、spy_ack と pending_keys を使う試験で見る。"""
         calls, acked = [], []
         o_p, o_a = dw.SoundStore.pending, dw.SoundStore.ack
 
@@ -2574,8 +2605,8 @@ class TestLaterDueAsk(BrowserCase):
     def test_carried_ack_is_for_the_same_board_only(self):
         """持ち越した鍵は、同じ板（このページの板の URL）にだけ当てる。別の板の鍵なら、その板の通知は出す。"""
         item = {"key": "15:00|会議", "time": "15:00", "title": "会議", "at": "00:00:01"}
-        acked = self.fake_notifications(lambda n: [dict(item)])
-        self.start_deck()
+        acked = self.spy_ack()
+        self.start_deck(pending=[item])
         self.write_board(rows=self.rows(), extra=self.SCRIPT % (
             "if(n===1){setTimeout(function(){sessionStorage.setItem('tbAckLater',JSON.stringify({board:'file:///C:/other/board.html',closed:{'15:00|会議':Date.now()}}));"
             "location.reload();},500);}"
@@ -2584,6 +2615,7 @@ class TestLaterDueAsk(BrowserCase):
         self.assertEqual(self.attr(dom, "data-loads"), "2")
         self.assertIn("⏰ 15:00 会議", self.attr(dom, "data-q"))
         self.assertEqual(acked, [])
+        self.assertEqual(self.pending_keys(), ["15:00|会議"])
 
     def test_carried_ack_skips_notice_added_after_close(self):
         """持ち越した鍵は、Deck がその通知を積んだ時刻（at）が閉じた時刻より前の項目にだけ当てる。閉じた後に積まれた同じ鍵の通知
@@ -2593,8 +2625,8 @@ class TestLaterDueAsk(BrowserCase):
                  {"key": "10:00|点検", "time": "10:00", "title": "点検", "at": "12:00:00"},   # 閉じたのと同じ秒
                  {"key": "15:00|会議", "time": "15:00", "title": "会議", "at": "12:30:00"},   # 閉じた後
                  {"key": "16:00|日報", "time": "16:00", "title": "日報"}]                      # at が無い
-        acked = self.fake_notifications(lambda n: [dict(it) for it in items if it["key"] not in acked])
-        self.start_deck()
+        acked = self.spy_ack()
+        self.start_deck(pending=items)
         self.write_board(rows=self.rows(), extra=self.SCRIPT % (
             "if(n===1){setTimeout(function(){var d=new Date(),c={};"
             "c['09:00|朝会']=c['10:00|点検']=c['15:00|会議']=c['16:00|日報']=new Date(d.getFullYear(),d.getMonth(),d.getDate(),12,0,0).getTime()+500;"
@@ -2608,6 +2640,7 @@ class TestLaterDueAsk(BrowserCase):
         self.assertIn("⏰ 16:00 日報", shown)      # at の無い通知も出る
         self.assertNotIn("朝会", shown)            # 閉じたより前に積まれた通知は出さない
         self.assertEqual(acked, ["09:00|朝会"])    # 確認として送るのは閉じたより前の分だけ
+        self.assertEqual(self.pending_keys(), ["10:00|点検", "15:00|会議", "16:00|日報"])   # 本物の SoundStore が外したのもその分だけ
 
     def test_inflight_count_drops_once(self):
         """答えが 1.5 秒の打ち切りの直後に来ても、数えは一度だけ減らす（負にならない）。打ち切りの時計が先に減らし、答えでもう一度減らさない。"""
@@ -3339,6 +3372,116 @@ class TestBrokenTimeKeys(BrowserCase):
             r = dw._time_range(row, m)
             self.assertEqual(html_unescape(dw._STRIP_TAGS_RE.sub("", row[r[0]:r[1]])), shown[title], title)
 
+    def test_screen_closed_close_time_keeps_dom(self):
+        """ブラウザが時刻の欄をタイトルやチップの手前で閉じる形（閉じタグは無いが画面は正しい＝_time_screen_closed）は、欄の中に class を
+        持つ要素が入らず「ボードの点検」の⑥に出ない。_time_close_at（board_edit.py v1.12 の close-time・Deck v2.16 の日付の切り替え）が
+        ブラウザの閉じる位置（その手前の空白を除く）に閉じタグを補った行は、補う前の行と DOM が空白の置き場所のほかは同じ
+        （board.js が動く前に読む）。"""
+        self.start_deck()
+        shapes = ['<div class="item">\n  <p class="time">9:00\n  <div>\n    <p class="task-title">%s</p>\n'
+                  '    <div class="chips"><span class="chip pending">未</span></div>\n  </div>\n</div>',
+                  '<div class="item"><div><span class="time">9:00</div><p class="task-title">%s</p>'
+                  '<div class="chips"><span class="chip pending">未</span></div></div>',
+                  '<div class="item"><div><span class="time">9:00</div>am <p class="task-title">%s</p>'
+                  '<div class="chips"><span class="chip pending">未</span></div></div>',
+                  # v1.11 の close-time が断った形（"after"・"after"・"text"。tests/test_board_edit.py の SHOWN_CLOSED_REFUSED_BEFORE）
+                  '<div class="item"><p class="time">9:00 <b>am</b><div><p class="task-title">%s</p>'
+                  '<div class="chips"><span class="chip pending">未</span></div></div></div>',
+                  '<div class="item"><div><span class="time">9:00 <span>am</div><p class="task-title">%s</p>'
+                  '<div class="chips"><span class="chip pending">未</span></div></div>',
+                  '<div class="item"><div><span class="time">  </div><p class="task-title">%s</p>'
+                  '<div class="chips"><span class="chip pending">未</span></div></div>',
+                  # 欄の中の p を後ろの p が閉じる形（足すのは </p></span>）
+                  '<div class="item"><div><span class="time">9:00 <p>a<p>b</div><p class="task-title">%s</p>'
+                  '<div class="chips"><span class="chip pending">未</span></div></div>']
+        rows = []
+        for i, s in enumerate(shapes):
+            after = s % ("後%d" % i)
+            hit = dw._time_open_unclosed(after)
+            self.assertIsNotNone(hit, i)
+            self.assertIsNotNone(dw._time_screen_closed(after, hit), i)
+            at = dw._time_close_at(after)
+            self.assertIsInstance(at, tuple, i)
+            after = after[:at[0]] + at[1] + after[at[0]:]
+            self.assertIsNone(dw._time_open_unclosed(after), i)
+            self.assertEqual(dw._item_key(after), dw._item_key(s % ("後%d" % i)), i)
+            rows += [s % ("前%d" % i), after]
+        cap = ("<script>(function(){var o={};Array.prototype.forEach.call(document.querySelectorAll('.item'),function(i){"
+               "var t=i.querySelector('.task-title');if(t)o[t.textContent]=i.outerHTML.split(t.textContent).join('T').replace(/\\s+/g,'');});"
+               "document.documentElement.setAttribute('data-o',JSON.stringify(o));})();</script>")
+        self.write_board(rows='\n<div class="section-label">今日中</div>\n' + "\n".join(rows) + "\n" + cap,
+                         extra=TestLaterDueAsk.SCRIPT % (
+                             "setTimeout(function(){document.documentElement.setAttribute('data-n',"
+                             "document.querySelectorAll('.time[data-tb-unclosed]').length);},800);"))
+        dom = self.open_page(self.board, budget=3000)
+        o = json.loads(self.attr(dom, "data-o"))
+        for i in range(len(shapes)):
+            self.assertEqual(o["前%d" % i], o["後%d" % i], i)
+            self.assertNotIn("task-title", o["前%d" % i].split('class="time"')[1].split("</")[0], i)
+        self.assertEqual(self.attr(dom, "data-n"), "0")      # ⑥は数えない（board.js は DOM しか見られない）
+
+    def test_formatting_reopened_and_close_time_confirmed(self):
+        """時刻の欄の中で閉じていない書式の要素（_FORMATTING_TAGS の14種）は、ブラウザが欄を閉じた後で開き直し、後ろのタイトルを包む
+        （_time_reopened。Chrome での確認を試験に残す）。close-time --confirmed と同じ位置に閉じタグを補った行
+        （_time_close_at の reopen）は、書式が外れて包まれず、行の鍵は同じ。1種1ページで見る（前の行から書式が漏れないように、補った行を先に置く）。"""
+        self.start_deck()
+        self.assertEqual(len(dw._FORMATTING_TAGS), 14)
+        for tag in sorted(dw._FORMATTING_TAGS):
+            with self.subTest(tag=tag):
+                row = ('<div class="item"><div><span class="time">9:00 <%s>am</div><p class="task-title">%%s</p>'
+                       '<div class="chips"><span class="chip pending">未</span></div></div>' % tag)
+                before = row % "前"
+                hit = dw._time_open_unclosed(before)
+                self.assertTrue(dw._time_reopened(before, hit))
+                self.assertIsNone(dw._time_screen_closed(before, hit))
+                self.assertEqual(dw._time_close_at(before), "format")
+                after = row % "後"
+                at = dw._time_close_at(after, reopen=True)
+                self.assertEqual(at[1], "</%s></span>" % tag)
+                after = after[:at[0]] + at[1] + after[at[0]:]
+                self.assertIsNone(dw._time_open_unclosed(after))
+                self.assertEqual(dw._item_key(after).replace("後", "前"), dw._item_key(before))
+                self.write_board(rows='\n<div class="section-label">今日中</div>\n' + after + "\n" + before + "\n",
+                                 extra=TestLaterDueAsk.SCRIPT % (
+                                     "setTimeout(function(){var o={};['前','後'].forEach(function(t){var e=tbItem(t).querySelector('.task-title');"
+                                     "o[t]=[!!(e.closest('%s')||e.querySelector('%s')),tbItem(t).querySelector('.time').textContent];});"
+                                     "document.documentElement.setAttribute('data-o',JSON.stringify(o));},800);" % (tag, tag)))
+                o = json.loads(self.attr(self.open_page(self.board, budget=3000), "data-o"))
+                self.assertTrue(o["前"][0], "%s は開き直されてタイトルを包む" % tag)
+                self.assertFalse(o["後"][0], "%s を補った行は包まれない" % tag)
+                self.assertEqual(o["前"][1], o["後"][1])
+
+    def test_keep_open_tags_take_title(self):
+        """時刻の欄の中で table・object・script など（_KEEP_OPEN_TAGS）が閉じていない行は、ブラウザが外側の閉じタグで欄を閉じず、
+        タイトルが欄の中に入るか文字として読まれる（_time_screen_closed は None にする＝「画面では正しく」の側に入れない）。
+        Reviewer が Chrome で試した形を、1種1ページで見る（MathML・SVG の要素は math・svg の中に置く）。
+        plaintext・textarea などはページの残りを飲み込むので、board.js を使わず、行1つだけのページの DOM を読んで、欄が閉じてタイトルの要素が
+        欄の外に出た形（`</span></div><p class="task-title">中</p>`）が無いことを見る。対照の <span> の行ではその形がある。"""
+        openers = {"table": "<table>", "select": "<select>", "textarea": "<textarea>", "object": "<object>", "marquee": "<marquee>",
+                   "template": "<template>", "applet": "<applet>", "mi": "<math><mi>", "foreignobject": "<svg><foreignObject>",
+                   "script": "<script>", "style": "<style>", "xmp": "<xmp>", "iframe": "<iframe>", "noembed": "<noembed>",
+                   "noframes": "<noframes>", "noscript": "<noscript>", "plaintext": "<plaintext>", "title": "<title>",
+                   "mo": "<math><mo>", "mn": "<math><mn>", "ms": "<math><ms>", "mtext": "<math><mtext>",
+                   "annotation-xml": "<math><annotation-xml>", "desc": "<svg><desc>", "svg-title": "<svg><title>"}
+        self.assertTrue(set(openers) - {"svg-title"} <= dw._KEEP_OPEN_TAGS)
+        closed = '</span></div><p class="task-title">中</p>'
+        page = os.path.join(os.path.dirname(self.board), "keep-open.html")
+        # math・svg の外にそのまま書いた MathML・SVG の要素は、ふつうに欄が閉じる（_time_keeps_open が数えない＝画面では正しい側）
+        controls = [("span", "<span>"), ("mi-outside", "<mi>"), ("foreignobject-outside", "<foreignObject>"), ("desc-outside", "<desc>")]
+        for tag, opener in controls + sorted(openers.items()):
+            with self.subTest(tag=tag):
+                row = ('<div class="item"><div><span class="time">9:00 %sx</div><p class="task-title">中</p>'
+                       '<div class="chips"><span class="chip pending">未</span></div></div>' % opener)
+                with open(page, "w", encoding="utf-8") as f:
+                    f.write('<html><head><meta charset="utf-8"></head><body>\n%s\n</body></html>' % row)
+                dom = self.open_page(page, budget=1000)
+                if (tag, opener) in controls:
+                    self.assertIsNotNone(dw._time_screen_closed(row, dw._time_open_unclosed(row)))
+                    self.assertIn(closed, dom)                 # 対照: ブラウザは </div> で欄を閉じ、タイトルは欄の外
+                else:
+                    self.assertIsNone(dw._time_screen_closed(row, dw._time_open_unclosed(row)))
+                    self.assertNotIn(closed, dom, tag)
+
     def test_check_counts_items(self):
         """⑥は項目ごとに数える（時刻の欄が2つとも閉じていない行も1件。board_edit.py の K15 と同じ）。"""
         self.start_deck()
@@ -3367,6 +3510,206 @@ class TestBrokenTimeKeys(BrowserCase):
                              "document.documentElement.setAttribute('data-check',c?c.textContent:'none');},800);"))
         dom = self.open_page(self.board, budget=3000)
         self.assertEqual(self.attr(dom, "data-check"), "none")
+
+
+class TestMoveOnBrokenBoard(BrowserCase):
+    """崩れた板（項目の入れ子＝K1）で D&D をすると、Deck v2.18 は 409（reason "board-broken"）で断り、board.js は移動を localStorage にも残さずに
+    読み直して元の位置へ戻し、理由を知らせに出す（2026-11-10）。ボードのファイルは変わらない。"""
+
+    ROWS = ('<div class="section-label">今日の予定</div>\n'
+            '<div class="item"><div><p class="task-title">動かす</p><div class="chips"><span class="chip pending">未</span></div></div></div>\n'
+            '<div class="section-label">今日中</div>\n'
+            '<div class="item"><div><p class="task-title">外</p></div>\n'
+            '<div class="item"><div><p class="task-title">中</p></div></div></div>')
+    JS = ("<script>window.addEventListener('load',function(){setTimeout(function(){"
+          "function item(t){return Array.prototype.slice.call(document.querySelectorAll('.item')).filter(function(i){"
+          "var e=i.querySelector('.task-title');return e&&e.textContent===t;})[0];}"
+          "if(!sessionStorage.getItem('t-done')){sessionStorage.setItem('t-done','1');var src=item('動かす');var dt=new DataTransfer();"
+          "src.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:dt}));"
+          "document.querySelector('.section-label[data-sec=\"今日中\"]').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt}));"
+          "src.dispatchEvent(new DragEvent('dragend',{bubbles:true}));return;}"
+          "var a=item('動かす');var s=a.previousElementSibling;while(s&&!s.classList.contains('section-label'))s=s.previousElementSibling;"
+          "var mv=Object.keys(localStorage).filter(function(k){return k.indexOf('mv:')===0;});"
+          "var t=document.getElementById('tb-move-broken');"
+          "document.documentElement.setAttribute('data-res',JSON.stringify({sec:s?s.textContent.trim():null,mv:mv,toast:t?t.textContent:null}));"
+          "},700);});</script>")
+
+    def test_refused_and_restored(self):
+        self.start_deck()
+        self.write_real_board(extra=self.JS)
+        with open(self.board, encoding="utf-8") as f:
+            t = f.read()
+        t = t.replace('<div class="section-label">今日の予定</div>', self.ROWS, 1)
+        with open(self.board, "w", encoding="utf-8") as f:
+            f.write(t)
+        self.assertEqual(dw.board_broken_reason(t), "項目の入れ子・閉じタグの欠落")
+        before = pathlib.Path(self.board).read_bytes()
+        dom = self.open_page(self.board, budget=6000)
+        m = re.search(r'data-res="([^"]*)"', dom)
+        self.assertIsNotNone(m, "読み直した後の確かめが動いていない")
+        res = json.loads(html_unescape(m.group(1)))
+        self.assertEqual(res["sec"], "今日の予定")          # 元の位置へ戻った（読み直した）
+        self.assertEqual(res["mv"], [])                     # localStorage に残していない
+        self.assertIn("ボードの形が崩れているため、移動をボードのファイルに書きませんでした", res["toast"] or "")
+        self.assertEqual(pathlib.Path(self.board).read_bytes(), before)
+        self.assertIn("/board/move", POSTS)
+
+
+class TestSwallowInBrowser(BrowserCase):
+    """K16（Deck v2.17・board_edit.py v1.13 の _swallow_open）の基準＝画面から消える要素がある形と、実行されるはずの board.js が実行されない形
+    （2026-11-10 ユーザー決定）を、Chrome の DOM で確かめる。
+    tests/swallow_cases.py の板（実物のテンプレートに項目2つ・見出し2つ・Deck の要素2つ。どれにも data-probe を付ける）に形を1つずつ入れて開き、
+    「_swallow_open が当たる ⇔ data-probe の要素のどれかが、DOM に同じ名前の HTML の要素として無いか、board.js が動かない」を1つの形を1ページで見る
+    （board.js が動いたかは、読み込み時に board.js が書く #loaded-at で見る。swallow_cases.NO_BOARD_JS の形は、board.js の読み込みがまるごと無い
+    板なので、当たらず board.js も動かないことを見る＝K16 にはせず、消す書き込みを K17 で断る）。DOM は、head に
+    defer で置いた probe.js が読み込みの後に数える（形が後ろを飲み込んでも動く）。CASES の真偽が DOM と合うことも見る。"""
+
+    PROBE_JS = ("var ns='http://www.w3.org/1999/xhtml',seen=[];"
+                "document.querySelectorAll('[data-probe]').forEach(function(e){if(e.namespaceURI===ns)seen.push(e.getAttribute('data-probe')+':'+e.localName);});"
+                "document.documentElement.setAttribute('data-seen',seen.join(','));")
+
+    def dom(self, text, name):
+        p = os.path.join(self.dir, name)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+        r = subprocess.run(browser_cmd(BROWSER, self.profile, "--disable-sync", "--disable-background-networking",
+                                       "--disable-component-update", "--virtual-time-budget=1500",
+                                       "--dump-dom", pathlib.Path(p).as_uri()), capture_output=True, timeout=90)
+        return r.stdout.decode("utf-8", "replace")
+
+    CUT = "ブラウザが行として読めていない所があります"
+
+    def test_head_board(self):
+        """head の形の板（テンプレートのまま）では、本文のどの形でも board.js が動き、「当たる ⇔ 消えた要素がある ⇔ ⑦が出る ⇔ D&D の行が無い」
+        （2026-11-10 ユーザー決定。@JS@ の形は末尾の形の板だけ）。"""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import swallow_cases as sc
+        with open(os.path.join(self.dir, "probe.js"), "w", encoding="utf-8") as f:
+            f.write(self.PROBE_JS)
+        with open(os.path.join(ASSETS, "board-template.html"), encoding="utf-8") as f:
+            t = sc.board(f.read(), datetime.date.today(), tail=False).replace("</title>", '</title>\n<script src="probe.js" defer></script>', 1)
+        n = cut = 0
+        for i, (snip, want) in enumerate([("n", False)] + sc.CASES):
+            if snip.startswith("@JS@"):
+                continue
+            with self.subTest(snippet=snip):
+                page = sc.page(t, snip)
+                hit = dw._swallow_open(page)
+                dom = self.dom(page, "h%03d.html" % i)
+                m = re.search(r'<html[^>]*\sdata-seen="([^"]*)"', dom)
+                self.assertIsNotNone(m, "probe.js が動いていない")
+                lost = [x for x in sc.PROBES if x not in set(m.group(1).split(","))]
+                m2 = re.search(r'id="loaded-at"[^>]*>([^<]*)<', dom)
+                self.assertTrue(m2 and m2.group(1).strip(), "board.js が動いていない")
+                self.assertEqual(hit is not None, bool(lost), (hit, lost))
+                self.assertEqual(self.CUT in dom, bool(lost), lost)
+                self.assertEqual(dom.count('draggable="true"') == 0, bool(lost))
+                n += 1
+                cut += bool(lost)
+        self.assertGreater(cut, 50)
+        self.assertGreater(n - cut, 50)
+
+    def test_cut_only(self):
+        """形の中に行の部品を書いた形（swallow_cases.CUT_ONLY）は、head の板でも末尾の板でも、K16 が当たり、board.js が動き、⑦が出る。"""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import swallow_cases as sc
+        with open(os.path.join(ASSETS, "board-template.html"), encoding="utf-8") as f:
+            tpl = f.read()
+        for tail in (False, True):
+            t = sc.board(tpl, datetime.date.today(), tail=tail)
+            for i, snip in enumerate(sc.CUT_ONLY):
+                with self.subTest(tail=tail, snippet=snip):
+                    page = sc.page(t, snip)
+                    self.assertIsNotNone(dw._swallow_open(page))
+                    dom = self.dom(page, "c%d%02d.html" % (tail, i))
+                    m2 = re.search(r'id="loaded-at"[^>]*>([^<]*)<', dom)
+                    self.assertTrue(m2 and m2.group(1).strip(), "board.js が動いていない")
+                    self.assertIn(self.CUT, dom)
+            for i, snip in enumerate(sc.CUT_MISS):
+                with self.subTest(tail=tail, miss=snip):
+                    page = sc.page(t, snip)
+                    self.assertIsNotNone(dw._swallow_open(page))     # K16 は当たる
+                    dom = self.dom(page, "m%d%02d.html" % (tail, i))
+                    m2 = re.search(r'id="loaded-at"[^>]*>([^<]*)<', dom)
+                    self.assertTrue(m2 and m2.group(1).strip(), "board.js が動いていない")
+                    self.assertNotIn(self.CUT, dom)                   # ⑦は出ない（見逃しの限界）
+
+    def test_cut_false_positive_and_limit(self):
+        """K16 に当たらない形（swallow_cases.NO_CUT）では⑦が出ず D&D の行があり、限界の形（CUT_LIMIT・エスケープした文字）では⑦が出る。"""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import swallow_cases as sc
+        with open(os.path.join(ASSETS, "board-template.html"), encoding="utf-8") as f:
+            tpl = f.read()
+        for tail in (False, True):
+            t = sc.board(tpl, datetime.date.today(), tail=tail)
+            for i, (snip, cut) in enumerate([(x, False) for x in sc.NO_CUT] + [(x, True) for x in sc.CUT_LIMIT]):
+                with self.subTest(tail=tail, snippet=snip):
+                    page = sc.page(t, snip)
+                    self.assertIsNone(dw._swallow_open(page))
+                    dom = self.dom(page, "f%d%02d.html" % (tail, i))
+                    m2 = re.search(r'id="loaded-at"[^>]*>([^<]*)<', dom)
+                    self.assertTrue(m2 and m2.group(1).strip(), "board.js が動いていない")
+                    self.assertEqual(self.CUT in dom, cut)
+                    self.assertEqual(dom.count('draggable="true"') > 0, not cut)
+
+    def test_migrated_board(self):
+        """末尾の形の板を migrate_board_js で移した板は、board.js が動き、消えた要素も⑦も無く、D&D の行がある（Deck v2.18）。"""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import swallow_cases as sc
+        with open(os.path.join(self.dir, "probe.js"), "w", encoding="utf-8") as f:
+            f.write(self.PROBE_JS)
+        with open(os.path.join(ASSETS, "board-template.html"), encoding="utf-8") as f:
+            tail = sc.page(sc.board(f.read(), datetime.date.today(), tail=True), "n")
+        moved = dw.migrate_board_js(tail)
+        self.assertIsNotNone(moved)
+        moved = moved.replace("</title>", '</title>\n<script src="probe.js" defer></script>', 1)
+        dom = self.dom(moved, "moved.html")
+        m = re.search(r'<html[^>]*\sdata-seen="([^"]*)"', dom)
+        self.assertEqual([x for x in sc.PROBES if x not in set(m.group(1).split(","))], [])
+        m2 = re.search(r'id="loaded-at"[^>]*>([^<]*)<', dom)
+        self.assertTrue(m2 and m2.group(1).strip())
+        self.assertNotIn(self.CUT, dom)
+        self.assertGreater(dom.count('draggable="true"'), 0)
+
+    def test_hits_iff_elements_lost(self):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import swallow_cases as sc
+        with open(os.path.join(self.dir, "probe.js"), "w", encoding="utf-8") as f:
+            f.write(self.PROBE_JS)
+        with open(os.path.join(ASSETS, "board-template.html"), encoding="utf-8") as f:
+            t = '<script src="probe.js" defer></script>\n' + sc.board(f.read(), datetime.date.today())
+        hits = 0
+        for i, (snip, want) in enumerate([("n", False)] + sc.CASES):
+            with self.subTest(snippet=snip):
+                page = sc.page(t, snip)
+                hit = dw._swallow_open(page)
+                hits += hit is not None
+                dom = self.dom(page, "b%03d.html" % i)
+                m = re.search(r'<html[^>]*\sdata-seen="([^"]*)"', dom)
+                self.assertIsNotNone(m, "probe.js が動いていない")
+                seen = set(m.group(1).split(","))
+                lost = [x for x in sc.PROBES if x not in seen]
+                m2 = re.search(r'id="loaded-at"[^>]*>([^<]*)<', dom)
+                if not (m2 and m2.group(1).strip()):
+                    lost.append("board.js")
+                if snip in sc.NO_BOARD_JS:
+                    self.assertIsNone(hit)
+                    self.assertEqual(lost, ["board.js"])
+                    continue
+                self.assertEqual(hit is not None, bool(lost), (hit, lost))
+                self.assertEqual(want, bool(lost))
+                if "board.js" not in lost:
+                    # board.js が動いた（末尾の形の板でも、後ろの閉じタグで閉じて board.js を飲み込まない形）なら、消えた要素があるときだけ
+                    # 「ボードの点検」の⑦（TB_CUT）が出て、D&D の行が無くなる
+                    self.assertEqual(self.CUT in dom, bool(lost), lost)
+                    self.assertEqual(dom.count('draggable="true"') == 0, self.CUT in dom)
+        self.assertEqual(hits, sum(w for _s, w in sc.CASES))
+        # DECK の START マーカーの直前の、後ろのコメントの --> で閉じるコメントは、消える要素が無いので当てない。board.js は動き、「ボードの点検」の②を出す
+        page = sc.page(t, "n").replace("<!-- DECK:AUTO:START -->", "<!-- x\n<!-- DECK:AUTO:START -->", 1)
+        self.assertIsNone(dw._swallow_open(page))
+        dom = self.dom(page, "d.html")
+        self.assertIn('id="tb-board-check"', dom)
+        self.assertIn("Deck の予約領域（DECK:AUTO の目印）がそろっていません", dom)
 
 
 if __name__ == "__main__":

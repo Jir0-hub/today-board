@@ -451,6 +451,33 @@ class TestPost(Sandbox):
         self.foreign()
         self.assertReverted(self.post(event="PostToolUseFailure"), before)
 
+    def test_swallow_reverted(self):
+        """指紋は同じで K16（閉じていない textarea など）が新しくできた書き込みも戻す（v1.1）。"""
+        before = self.read()
+        self.pre()
+        self.foreign(lambda t: t.replace("<!-- DECK:AUTO:START -->", "<!-- DECK:AUTO:START --><textarea><span id=\"deck-key\"></span>"))
+        self.assertReverted(self.post(), before)
+
+    def test_board_js_removed_reverted(self):
+        """指紋は同じで、実行される board.js の読み込みを消した書き込みも戻す（K17・v1.1）。"""
+        before = self.read()
+        self.pre()
+        self.foreign(lambda t: t.replace('<script src="board.js" defer></script>', ""))
+        self.assertReverted(self.post(), before)
+
+    def test_board_js_migration_not_reverted(self):
+        """末尾の形の板を head の形へ移す書き込み（Deck v2.18 / board_edit.py v1.14 の migrate_board_js）は、指紋も形の悪さも変わらないので戻さない。"""
+        t = self.read().decode("utf-8")
+        nl = "\r\n" if "\r\n" in t else "\n"
+        head = '<script src="board.js" defer></script>' + nl
+        self.assertEqual(t.count(head), 1)
+        self.write(t.replace(head, "", 1).rstrip("\r\n") + nl + nl + '<script src="board.js"></script>' + nl)
+        self.pre()
+        moved = self.foreign(lambda x: be.migrate_board_js(x))
+        self.assertIsNone(self.post())
+        self.assertEqual(self.read(), moved)
+        self.assertEqual(self.history("foreign"), [])
+
     def test_shape_worse_same_fingerprint(self):
         before = self.read()
         self.pre()
@@ -1192,11 +1219,13 @@ COPIED = ["_blank_comments", "_canon_section", "_scan_board", "_element_text", "
           "_normalize_item_block", "board_header_date_text", "parse_board_date", "_marker_counts", "_item_start_lines",
           "board_structure_ok", "_div_balance", "hand_fingerprint", "_region_text", "placeholder_regions",
           "strict_date_ok", "structure_errors", "_guard_atomic_write", "guard_format_ok", "guard_write_record",
-          "guard_remove_record", "guard_prune_records", "_write_tmp", "_rm", "history_dir", "create_history_file"]
+          "guard_remove_record", "guard_prune_records", "_write_tmp", "_rm", "history_dir", "create_history_file",
+          "_sw_tag_end", "_sw_text_end", "_sw_is_board_js", "_sw_runs", "_sw_src_board_js", "_sw_board_js_in", "_sw_lost", "_swallow_open", "_sw_scan", "swallow_text"]
 COPIED_CONSTS = ["MARKER_START", "MARKER_END", "MOVABLE_SECTIONS", "_SECTION_LABEL_RE", "_CLASS_TAG_RE",
                  "_STRIP_TAGS_RE", "_ITEM_CLASS_RE", "_ANY_CLASS_TAG_RE", "WEEKDAY_JA", "_HEADER_RE", "_TITLE_RE",
                  "_UPD_TIME_RE", "HISTORY_DIRNAME", "PLACEHOLDER_RE", "STRICT_DATE_RE", "GUARD_DIRNAME", "GUARD_FORMAT_V",
-                 "GUARD_RECORD_MAX_AGE_SEC", "_guard_last_ns"]
+                 "GUARD_RECORD_MAX_AGE_SEC", "_guard_last_ns", "_VOID_TAGS", "_SWALLOW_TAGS", "_FOREIGN_BREAKOUT", "_SW_TAG_RE",
+                 "_SW_ATTR_NAME_RE", "_SW_UNQUOTED_RE", "_SW_SPACE", "_SW_SCRIPT_RE", "_SW_ROW_RE", "_SW_START_RE", "_SW_JS_TYPES", "_SW_SCRIPT_OPEN_RE", "_SW_SRC_RE"]
 
 
 def _sources(path):
@@ -1229,7 +1258,8 @@ class TestCopy(Sandbox):
         variants = [good, good.replace("\n", "\r\n"), good.replace("<!-- DECK:AUTO:END -->", ""),
                     good.replace('<div class="section-label">今日中</div>\n',
                                  '<div class="section-label">今日中</div>\n' + NESTED),
-                    good.replace("作業A", "作業A &amp; <b>x</b>"), good.replace("<title>", "<title>{{X}}")]
+                    good.replace("作業A", "作業A &amp; <b>x</b>"), good.replace("<title>", "<title>{{X}}"),
+                    good.replace("<!-- DECK:AUTO:START -->", "<!-- DECK:AUTO:START --><textarea>")]
         for t in variants:
             self.assertEqual(gd.hand_fingerprint(t), be.hand_fingerprint(t))
             self.assertEqual(gd.hand_fingerprint(t), dw.hand_fingerprint(t))
@@ -1238,7 +1268,9 @@ class TestCopy(Sandbox):
             raw = t.encode("utf-8")
             fp, codes = gd.describe(b"\xef\xbb\xbf" + raw)
             self.assertEqual(fp, be.hand_fingerprint(be.decode_board(b"\xef\xbb\xbf" + raw)[0]))
-            want = {e["code"] for e in be.structure_errors(t) if e["code"] in ("K1", "K3")}
+            want = {e["code"] for e in be.structure_errors(t) if e["code"] in ("K1", "K3", "K16")}
+            if "K16" not in want and not be._sw_scan(t)[1]:
+                want.add("K17")
             if be.PLACEHOLDER_RE.search(be.placeholder_regions(t)):
                 want.add("K5")
             self.assertEqual(codes, want)

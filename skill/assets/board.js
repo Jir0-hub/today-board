@@ -113,6 +113,84 @@
     console.info('[today-board] 書き込みをブロック: ' + path + '（' + TB_LIVE.why + '）');
   }
 
+  // ---- 切れた画面の判定（2026-11-10 ユーザー決定・TB_CUT） ----
+  // board.js を head に defer で読む板（テンプレート・Deck v2.18 / board_edit.py v1.14 が移した板）では、本文の閉じていない要素などが
+  // 後ろを飲み込んでも board.js は動く。そのとき、ブラウザが要素として読めなかった行があるかをここで一度だけ決め、「ボードの点検」の⑦に出し、
+  // D&D（board.html を書く唯一の経路）を止める。✎ の時刻・ack・通知音の設定は sound.json に書き、見えている行の鍵か板全体の設定で決まるので
+  // 止めない。TB_LIVE の判定は変えない（別の判定として持つ。IIFE の外で定義して中から使う名前は TB_LIVE・tbBlockWrite とこれ）。
+  // 元の HTML の文字は file: のページでは読めないので、DOM だけで見る（board_edit.py・Deck の K16 は HTML の文字で見る）:
+  //   ① テンプレートの最後の要素 #toast-area が無い（後ろが飲み込まれた）
+  //   ② body の中の、閉じタグまでを文字として読む要素（textarea・title・style・xmp・iframe・noembed・noframes・noscript・plaintext・
+  //      script）の文字に、行の開きタグ（K16 の _SW_ROW_RE と同じ class）か DECK:AUTO の目印がある
+  //   ③ template の中身に同じものがある
+  //   ④ 中に <!-- があるコメント（後ろのコメントの --> で閉じた形）に同じものがある。自分の --> で閉じたコメント（テンプレートの
+  //      記入例など）は見ない（K16 と同じ）
+  //   ⑤ 本文の要素の属性の値に同じものがある（引用符の閉じていない属性の値が、後ろの行のタグを取り込んだ形）
+  //   ⑥ svg・math の要素の直下の文字に行の開きタグがある（閉じた CDATA の中など）。偽のコメント（<!・<?・</ で始まる形）が > の無い行の開きタグで終わる
+  //   限界: DOM では、エスケープした文字（&lt;…&gt;）を svg の text・math・textarea などに書いた形と、自分の --> で閉じたコメントが空白を挟まずに
+  //   行の開きタグの途中で終わる形（<!--<div class="item"-->）を、取り込んだ開きタグと見分けられないので、その形でも⑦が出る（K16 は HTML の文字で
+  //   見るので出ない。Chrome で確かめた・2026-11-11・n=1）
+  var TB_CUT = (function () {
+    var ROW = /<[A-Za-z][\w-]*\b[^<>]*?\sclass\s*=\s*["']?(?:[^"'<>]*\s)?(?:task-title|task-note|chips|chip|item|section-label)(?=["'\s>\/])/i;
+    function lost(s) { return !!s && (ROW.test(s) || s.indexOf('DECK:AUTO') >= 0); }
+    // 属性の値の中の、class を持つ開きタグ（その class の値は、ブラウザが別の属性として読むので、行の class の名前は値に残らない）
+    var CLS = /<[A-Za-z][\w-]*\b[^<>]*\sclass\s*=/i;
+    // 開きタグの > の手前まで（名前と、属性の並び）。最後の属性に限り、閉じていない引用符の値を許す（属性の値の中の > で偽のコメントが終わった形
+    // ＝<!x<div class="section-label" title="a>b">）
+    var TAG = /^<[A-Za-z][^\s\/>]*(?:\s+[^\s"'>\/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*(?:\s+[^\s"'>\/=]+\s*=\s*(?:"[^"]*$|'[^']*$))?$/;
+    // 中身の中の開きタグの始まり（<英字）を後ろから順に試し、そこから終わりまでが TAG に合えば、その開きタグを取り込んだとみなして位置を返す（無ければ -1）
+    // （閉じていない引用符の値は < や > を含んでよい＝<!x <span class="chip" title="a のように、値の途中に後ろの閉じタグの < が入る形）。
+    // 長いコメントで遅くならないよう、試すのは後ろから 20 か所まで
+    function tailTag(d) {
+      var k = d.length, n = 0;
+      while (n < 20 && (k = d.lastIndexOf('<', k - 1)) >= 0) {
+        if (/[A-Za-z]/.test(d.charAt(k + 1))) {
+          n++;
+          if (TAG.test(d.slice(k))) return k;
+        }
+        if (k === 0) break;
+      }
+      return -1;
+    }
+    try {
+      if (!document.getElementById('toast-area')) return true;
+      var body = document.body;
+      if (!body) return true;
+      var raw = body.querySelectorAll('textarea,title,style,xmp,iframe,noembed,noframes,noscript,plaintext,script');
+      for (var i = 0; i < raw.length; i++) if (lost(raw[i].textContent)) return true;
+      // svg・math の中の文字（閉じた CDATA など）。親が svg・math の要素の文字だけを見る（foreignObject の中の HTML の文字は見ない）。
+      // 行の開きタグだけを見て、DECK の目印の文字は見ない（<desc> などの説明の文字で出さないため）
+      var XHTML = 'http://www.w3.org/1999/xhtml';
+      var tw = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, null, false);
+      for (var tx = tw.nextNode(); tx; tx = tw.nextNode()) {
+        var par = tx.parentNode;
+        if (par && par.namespaceURI && par.namespaceURI !== XHTML && ROW.test(tx.data)) return true;
+      }
+      var tm = document.querySelectorAll('template');
+      for (var j = 0; j < tm.length; j++) if (lost(tm[j].innerHTML)) return true;
+      var all = body.getElementsByTagName('*');
+      for (var a = 0; a < all.length; a++) {
+        var at = all[a].attributes || [];
+        for (var b = 0; b < at.length; b++) if (at[b].value.indexOf('<') >= 0 && (lost(at[b].value) || CLS.test(at[b].value))) return true;
+      }
+      // コメントと処理命令（<?x の後ろに空白か改行がある形を、ブラウザは処理命令として読む）
+      var w = document.createTreeWalker(body, NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_PROCESSING_INSTRUCTION, null, false);
+      for (var c = w.nextNode(); c; c = w.nextNode()) {
+        if (c.data.indexOf('<!--') >= 0 && lost(c.data)) return true;
+        // 偽のコメント（<!・<?・</ で始まり、最初の > で閉じる形）が、> の無い開きタグで終わる＝その開きタグの要素が読まれない。
+        // 偽のコメントは、取り込んだ開きタグの > の手前で終わるので、中身は空白で終わらず、末尾はまるごと属性の並びとして読める（TAG）。
+        // 中身が空白で終わる形（自分の --> で閉じたコメントの多く。<!-- <div class="item" -->・<!-- memo <div class="item -->）は見ない。
+        // 見つけた末尾の開きタグだけを見る（その前の行のタグは、自分の --> で閉じたコメントの中身でもありうるため）
+        var tk = /\s$/.test(c.data) ? -1 : tailTag(c.data);
+        if (tk >= 0 && lost(c.data.slice(tk) + '>')) return true;
+      }
+    } catch (err) {
+      return false;
+    }
+    return false;
+  })();
+  if (TB_CUT) console.info('[today-board] 切れた画面を検出しました（ドラッグでの移動を止めます）');
+
   // ---- Deck の受信ポート・トークンと、どのボードからの要求かの申告（Deck v2.1 対応・2026-10-23） ----
   // ※この節（DECK_BOARD・DECK_KEY・deckReloadOnce・DECK_STALE_STUCK・deckReloadStale・deckFetch）は
   //   トップレベルに置く。
@@ -120,7 +198,7 @@
   //   v2.1 で persistMove の fetch を deckFetch に置き換えた際、deckFetch が自動機能の IIFE の
   //   中にあったため D&D 側から見えず、ドロップのたびに ReferenceError で移動が保存されなかった
   //   （2026-10-25 修正）。IIFE の外で定義された名前を IIFE の中から使うのは、ここと
-  //   TB_LIVE・tbBlockWrite だけにする。
+  //   TB_LIVE・tbBlockWrite・TB_CUT（2026-11-10）だけにする。
   // 127.0.0.1 は PC 全体で共有され、ブラウザで開いたどのページからも要求を送れる。そこで:
   //   ・Deck は 8737〜8746 のうち空いている最初の1つで受信し、そのポートと起動ごとの
   //     乱数のトークンを、このボードの DECK:AUTO 領域に
@@ -249,8 +327,10 @@
   function tbTitleText(el) {
     return el ? tbKeyText(el, false) : '';
   }
-  // data-tb-unclosed＝欄と同じ名前の最初の閉じタグより前に class を持つ要素がある欄（tbKeyWalk が class で止まった欄。board_edit.py の
-  // _time_open_unclosed・警告 K15 と同じ判定。「ボードの点検」の⑥が数える）。class の無い同じ名前の子が先に閉じる欄
+  // data-tb-unclosed＝欄と同じ名前の最初の閉じタグより前に class を持つ要素がある欄（tbKeyWalk が class で止まった欄。「ボードの点検」の⑥が
+  // 数える）。board_edit.py の _time_open_unclosed・警告 K15 は HTML の文字で同じ形を見るが、ここは DOM しか見られないので、ブラウザが欄を
+  // タイトルやチップの手前で閉じる形（<p class="time">9:00<div><p class="task-title">… など。閉じタグは無いが、DOM の欄の中に class を持つ
+  // 要素が無い＝Deck v2.16 / board_edit.py v1.12 の _time_screen_closed）は、K15 に出ても⑥には出ない。class の無い同じ名前の子が先に閉じる欄
   // （<span class="time"><span>9</span>:00 <span class="x">…</span></span> など）は、✎ は守るが⑥には数えない（K15 にも出ないため）
   Array.prototype.forEach.call(document.querySelectorAll('.item .time'), function (el) {
     if (!el.querySelector('[class]')) return;
@@ -1295,6 +1375,11 @@
       // （role="status" の要素を作り直すと、読み上げが同じ知らせをくり返すため。#tb-board-notice と同じ方針）。違えば前の知らせを消して作る
       var prev = document.getElementById('tb-board-check');
       var msgs = [];
+      // ⑦ 切れた画面（TB_CUT・2026-11-10 新設）。いちばん重いので先頭に出す
+      if (TB_CUT) {
+        msgs.push('ボードの HTML に閉じていない要素などがあり、ブラウザが行として読めていない所があります（画面に出ていないタスクや、Deck の欄があるかもしれません）。'
+          + 'この間はドラッグでの移動を止めています。');
+      }
       var nested = 0;
       Array.prototype.forEach.call(document.querySelectorAll('.item .item'), function (it) {
         if (!(it.closest && it.closest('[data-sid]'))) nested++;
@@ -1375,7 +1460,8 @@
       // <span class="time">0:00 のように時刻の欄が閉じていない行（data-tb-unclosed）。時刻の欄の中に class を持つ要素があるので、
       // ✎ で時刻を変えられない。欄の中にタイトルやチップが入っている行（tbTimeHasPart）は、「明日以降」へ動かすときに実施日も決められない
       // （欄の中に入ったのが部品でない class の要素だけの行は、閉じタグの有無によらず決められる＝Deck も同じ。行の鍵は Deck と合うので、D&D・通知・× は効く）。
-      // board_edit.py の警告 K15 と同じ形で、同じく項目ごとに数える（時刻の欄が2つ以上ある行は、どれか1つが閉じていなければ1件）。
+      // board_edit.py の警告 K15 と同じく項目ごとに数える（時刻の欄が2つ以上ある行は、どれか1つが閉じていなければ1件）。DOM しか見られないので、
+      // 閉じタグは無いがブラウザが欄をタイトルやチップの手前で閉じる行（K15 には出る＝_time_screen_closed）は数えない。
       // 欄が div の行は後ろの項目も中に入れることが多く、上の入れ子（①）にも数えられる。自動収集カード（data-sid）は見ない
       var unclosedItems = [];
       Array.prototype.forEach.call(document.querySelectorAll('.item .time[data-tb-unclosed]'), function (el) {
@@ -2543,6 +2629,7 @@
           }
         });
         groupItems(g).forEach(function (it) {
+          if (TB_CUT) return;   // 切れた画面では動かせるようにしない（TB_CUT・2026-11-10）
           if (it.getAttribute('draggable') === 'true') return;
           it.setAttribute('draggable', 'true');
           it.classList.add('draggable');
@@ -2646,6 +2733,28 @@
         moveFailTimer = setTimeout(function () { if (el.parentNode) el.remove(); }, 30000);
       }
     }
+    // 崩れた板で Deck が移動を断った（409・reason "board-broken"・Deck v2.18）。画面の移動はどこにも残さず、読み直して元の位置へ戻し、
+    // 読み直した後に理由を出す（sessionStorage の印。このタブの次の読み込みだけが見る）
+    var MOVE_BROKEN_KEY = 'tb-move-broken';
+    var MOVE_BROKEN_MSG = 'ボードの形が崩れているため、移動をボードのファイルに書きませんでした（画面は元の位置に戻しました）。'
+      + 'Claude に「ボードを直して」と頼んでください';
+    function moveBoardBroken() {
+      try { sessionStorage.setItem(MOVE_BROKEN_KEY, '1'); } catch (err) {}
+      location.reload();
+    }
+    function moveBrokenNotice() {
+      var flag = null;
+      try { flag = sessionStorage.getItem(MOVE_BROKEN_KEY); sessionStorage.removeItem(MOVE_BROKEN_KEY); } catch (err) {}
+      var area = document.getElementById('toast-area');
+      if (!flag || !area) return;
+      var el = document.createElement('div');
+      el.className = 'toast';
+      el.id = 'tb-move-broken';
+      el.textContent = MOVE_BROKEN_MSG;
+      el.addEventListener('click', function () { if (el.parentNode) el.remove(); });
+      area.appendChild(el);
+      if (LS.get('toastMode', 'stay') === 'auto') setTimeout(function () { if (el.parentNode) el.remove(); }, 30000);
+    }
     function persistMove(rec) {
       function persistLocal() {
         var arr = readJSON('mv:' + dateKey, []);
@@ -2656,10 +2765,19 @@
       // ここは deckPost を通らない独立した書き込み経路なので、同じ判定を明示的に置く。
       // localStorage 側の保存はブラウザ内で完結するので残す（画面上の移動は従来どおり効く）。
       if (!TB_LIVE.live) { tbBlockWrite('/board/move'); persistLocal(); return; }
+      if (TB_CUT) { console.info('[today-board] 書き込みをブロック: /board/move（切れた画面）'); return; }   // 2026-11-10。refreshMarks で動かせないが念のため
       if (tbDayStop(true)) return;   // 開いたまま日付が変わった（Deck へも localStorage へも残さずに読み直す）
       var p = deckFetch('/board/move', { method: 'POST', body: JSON.stringify(rec) });
       if (!p) { persistLocal(); return; }
       p.then(function (res) {
+        if (res && res.status === 409) {
+          // 崩れた板（Deck v2.18 の reason "board-broken"）は、理由を出して、移動をどこにも残さずに元の位置へ戻す（読み直す）。
+          // それ以外の 409（ほかの書き手と重なって書けなかった）は従来どおり
+          return res.json().then(function (j) {
+            if (j && j.reason === 'board-broken') { moveBoardBroken(); return; }
+            persistLocal(); moveSaveFailed();
+          }, function () { persistLocal(); moveSaveFailed(); });
+        }
         if (!res || !res.ok) { persistLocal(); moveSaveFailed(); }
       }).catch(function (err) {
         persistLocal();
@@ -2673,4 +2791,5 @@
     refreshMarks();
     renderOrderUI();
     recalc();
+    moveBrokenNotice();
   })();

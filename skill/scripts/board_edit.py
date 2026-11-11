@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""board_edit.py v1.11 — きょうのボード（board.html）を書き換える専用のスクリプト。
+"""board_edit.py v1.14 — きょうのボード（board.html）を書き換える専用のスクリプト。
 
 Claude は board.html を直接書かず、このスクリプトに操作を渡す。スクリプトが HTML を機械で書き換え、
-書く前に出来上がりの形を検査し（K1〜K9 に当たれば書かない・K11〜K15 は書いて警告する）、
+書く前に出来上がりの形を検査し（K1〜K9・K16・K17 に当たれば書かない・K11〜K15 は書いて警告する）、
 書く前に .guard/auth/ へ書き込みの記録を残してから、一時ファイル→os.replace で置き換える。
 置き換える直前に板を読み直し、読んだときと違えば（ほかの書き手が書いた）記録を消して最初からやり直す。
 create は置き換える前の板を history/board-<日付>-before-create-<時刻>.html に、restore は戻す前の板を
@@ -41,6 +41,25 @@ create は置き換える前の板を history/board-<日付>-before-create-<時�
       欄の範囲（_time_range）は、外側で開いていない閉じタグを読み飛ばし、p の欄を後ろの p を閉じる要素の手前で閉じる（Deck v2.15 と同じ）。
       行の鍵（status の key）の時刻の部分もこの範囲で読むので、範囲の外に文字がある形（p の欄の後ろの div の文字・閉じタグの無い欄の
       閉じる所より後ろの文字）では鍵が変わる（Deck v2.15・board.js の鍵と合う）
+      v1.12: 閉じタグの無い時刻の欄のうち、ブラウザが欄をタイトルやチップの手前で閉じる形（<p class="time">9:00<div><p class="task-title">…・
+      <div><span class="time">9:00</div><p class="task-title">…。画面は正しく、board.js の「ボードの点検」の⑥には出ない＝_time_screen_closed）を、
+      警告 K15 で別の文で知らせ、close-time はブラウザが閉じる位置（その手前の空白を除く）に閉じタグを補う（画面も鍵も変わらない。v1.11 までは時刻の文字の直後に補い、
+      時刻の文字の後ろにタグで囲んだ文字がある形〔<p class="time">9:00 <b>am</b><div>…・<div><span class="time">9:00 <span>am</div>…・
+      <div><span class="time">9:00</div>am <p class="task-title">…〕は断って restore を案内し、欄に時刻の文字が無い形〔<div><span class="time">  </div>…〕は断って
+      時刻の欄の文字を確かめるよう案内した）。欄の中で開いて閉じていない要素があれば、その閉じタグも
+      足す（書式の要素〔b・i など＝_FORMATTING_TAGS〕が欄の中で閉じていない行〔_time_reopened〕は K15 の3つ目の文で知らせ、close-time は
+      --confirmed のときだけ同じく補う〔タイトルやチップを包んでいた書式が外れ、画面が変わるため〕。欄そのものが書式の要素の行と、欄の中で
+      table・object・script などが閉じていない行は、この扱いをせず上の判定に戻る）。Deck v2.16 の _time_close_at・_time_screen_closed の写し
+      v1.13: 構造の検査 K16（E）を足す（_swallow_open・2026-11-10 ユーザー決定「断る」）。ブラウザが要素として読まない所（閉じていない textarea・script など
+      の中・コメント・CDATA・タグ・template の中）に行・見出し・Deck の欄が入って画面から消える形と、board.js の読み込みが実行されない形を当てる
+      （基準は _swallow_open の注釈）。status の structure_errors に出し、K1〜K3 と同じく、いまの板にあれば書かずに restore を案内し（require_sound）、
+      出来上がりにあれば書かない。restorable_today と restore の戻す版からも外れる。K16 の行がある項目には K15 を出さない（その行は K16 で知らせる）。
+      あわせて K17（E）を足す: 書く前の板で実行される board.js の読み込みが、出来上がりで無いか実行されない形なら書かない。Deck v2.17・guard.py v1.1 と同じ写し
+      v1.14: 書く操作のたびに、末尾の形の板（body の最後に <script src="board.js"></script>）を head の形（board.css の読み込みの直後に
+      <script src="board.js" defer></script>）へ移す（migrate_board_js。Deck v2.18 の写し・2026-11-10 ユーザー決定「自動で移す」）。
+      テンプレート（create）は head の形で作る。移すのは操作の前で、移した板に操作を当てる。移した書き込みの出力には migrated: true が付き、操作の
+      中身が何も変わらなくても changed は真になる。create・restore が history/ に残す「置き換える前の板」も、移した後の版になる（行・見出し・DECK 領域・
+      ヘッダは同じ）。移しても行の指紋・K6〜K8・K17 は変わらない
 使い方は `board_edit.py --help` と `board_edit.py <操作> --help`。
 
 - Python 3 標準ライブラリのみ・単一ファイル（Deck と同じ制約）
@@ -64,7 +83,7 @@ import urllib.parse
 from collections import Counter
 from datetime import date, datetime
 
-VERSION = "1.11"
+VERSION = "1.14"
 
 # ================================================================ Deck の写し（定数）
 
@@ -394,8 +413,14 @@ def _time_open_unclosed(block):
     """閉じていない時刻の欄の最初のもの（v2.14 / board_edit.py v1.10）。(開きタグの match, 読み終える位置) か、無ければ None。
 
     閉じていない＝欄の開きタグの後、欄と同じ名前の最初の閉じタグより前に class を持つ開きタグがある形（v2.14 の _key_text が
-    そこで読み終えた形。v2.15 / board_edit.py v1.11 の _key_text は、欄の範囲〔_time_range〕がその開きタグより手前で終わる形では範囲の終わりで読み終える）。ブラウザはその要素を欄の中に取り込む。時刻の欄が2つ以上ある行では、どの欄も見る
-    （board.js の data-tb-unclosed・「ボードの点検」の⑥と同じ。board_edit.py の警告 K15 もこれで見る）。"""
+    そこで読み終えた形。v2.15 / board_edit.py v1.11 の _key_text は、欄の範囲〔_time_range〕がその開きタグより手前で終わる形では範囲の終わりで読み終える）。
+    板の文字の上で閉じタグが無い形を見るので、ブラウザの画面の側では2つに分かれる（_time_screen_closed・v2.16 / board_edit.py v1.12）:
+    欄の範囲がその開きタグより後ろまで続く形では、ブラウザはその要素を欄の中に取り込む（board.js の data-tb-unclosed・「ボードの点検」の⑥も
+    数える）。欄の範囲がその開きタグ以前で終わる形（<p class="time">9:00<div><p class="task-title">… や、<div><span class="time">9:00</div>
+    <p class="task-title">…）では、ブラウザは欄をその手前で閉じ、欄の中に class を持つ要素は入らない——画面は正しく、board.js は DOM しか
+    見られないので⑥には出ない。それでも閉じていないと数えるのは、最初の同じ名前の閉じタグまでを欄として書き換える set-time
+    （_replace_element_inner）が、後ろのタイトルやチップまで消すため。時刻の欄が2つ以上ある行では、どの欄も見る（board_edit.py の
+    警告 K15 もこれで見る）。"""
     for m in _CLASS_TAG_RE.finditer(block):
         if "time" in m.group(2).split():
             end = block.find("</%s>" % m.group(1), m.end())
@@ -405,17 +430,141 @@ def _time_open_unclosed(block):
     return None
 
 
-def _time_close_at(block):
+# ブラウザが閉じた後の文字の前に開き直す書式の要素（HTML の構文解析の formatting elements。_time_screen_closed・_time_reopened・v2.16 / board_edit.py v1.12。
+# 14種とも開き直すことを Chrome で確かめた＝2026-11-10・Reviewer・1種を1行1ページ・n=1）
+_FORMATTING_TAGS = frozenset(("a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong", "tt", "u"))
+# 中で開いていると、ブラウザが外側の要素の閉じタグで時刻の欄を閉じない要素（_time_screen_closed・_time_reopened・v2.16 / board_edit.py v1.12）。
+# 名前は _time_inner_open と同じく小文字（foreignObject も foreignobject）。3種類ある:
+#   ・スコープの境界になる要素: table・object・marquee・template・applet（ブラウザは中で外側の閉じタグを読み飛ばす。select も読み飛ばす）
+#   ・MathML・SVG の中に HTML を入れる所: mi・mo・mn・ms・mtext・annotation-xml（MathML）・foreignobject・desc（SVG）
+#     （_time_keeps_open が、それより外側に math〔MathML〕・svg〔SVG〕が開いているときだけ数える。<math>・<svg> の外にそのまま書いたものは
+#     ふつうの要素で、ブラウザは外側の閉じタグで欄を閉じる。Chrome で確かめた＝2026-11-10・Reviewer・n=1）
+#   ・閉じタグまでを文字として読む要素: textarea・script・style・xmp・iframe・noembed・noframes・noscript・plaintext・title
+#     （名前だけで見る。title は svg の外でも閉じタグまでを文字として読み、<svg><title> も欄を閉じない）
+# Chrome で確かめた（1種を1行1ページ・n=1）＝table・select・textarea（2026-11-10・Reviewer）、object・marquee・template・applet・<math><mi>・
+# <svg><foreignObject>・script・style・xmp・iframe・noembed・noframes・noscript・plaintext・title（同日・Reviewer）、
+# <math><mo>・<math><mn>・<math><ms>・<math><mtext>・<math><annotation-xml>・<svg><desc>・<svg><title>（同日・Reviewer）
+_KEEP_OPEN_TAGS = frozenset(("table", "select", "object", "marquee", "template", "applet",
+                             "mi", "mo", "mn", "ms", "mtext", "annotation-xml", "foreignobject", "desc",
+                             "textarea", "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext", "title"))
+# 上のうち、外側に math（_MATH_POINTS）・svg（_SVG_POINTS）が開いているときだけ数える要素
+_MATH_POINTS = frozenset(("mi", "mo", "mn", "ms", "mtext", "annotation-xml"))
+_SVG_POINTS = frozenset(("foreignobject", "desc"))
+
+
+def _time_keeps_open(inner):
+    """_time_inner_open の結果（外側から順の名前）に、ブラウザが外側の閉じタグで時刻の欄を閉じなくなる要素（_KEEP_OPEN_TAGS）があるか
+    （v2.16 / board_edit.py v1.12）。MathML の mi など（_MATH_POINTS）は、それより外側に math があるときだけ、SVG の foreignobject・desc
+    （_SVG_POINTS）は svg があるときだけ数える（<math>・<svg> の外にそのまま書いたものは、ブラウザが外側の閉じタグで欄を閉じる）。"""
+    for i, name in enumerate(inner):
+        if name in _MATH_POINTS:
+            if "math" in inner[:i]:
+                return True
+        elif name in _SVG_POINTS:
+            if "svg" in inner[:i]:
+                return True
+        elif name in _KEEP_OPEN_TAGS:
+            return True
+    return False
+
+
+def _time_screen_closed(block, hit):
+    """閉じていない時刻の欄（hit＝_time_open_unclosed の戻り値）を、ブラウザが class を持つ開きタグ以前で閉じるか（v2.16 / board_edit.py v1.12）。
+    閉じるなら、その位置（欄の範囲〔_time_range〕の中身の終わり）、閉じなければ None。
+
+    閉じる形では、ブラウザの欄の中に class を持つ要素は入らず、画面は正しい（board.js は DOM しか見られないので、「ボードの点検」の⑥には
+    出ない）。この位置はブラウザが自分で欄を閉じる位置（外側の要素の閉じタグか、p を閉じる開きタグの手前）なので、ここに閉じタグを補っても
+    ブラウザの DOM は変わらない（_time_range がブラウザと違う所で閉じる形〔_implied_close の注釈〕を除く。_time_close_at はこの位置の手前の
+    空白を除いた所に補うので、その空白だけが欄の外へ出る）。
+    欄そのものが書式の要素（<b class="time">…＝_FORMATTING_TAGS）の行と、欄の中に閉じていない書式の要素がある行（<span class="time">9:00 <b>am</div>…）は
+    None（画面が正しくないため。ブラウザは欄を閉じた後で書式の要素を開き直し、後ろのタイトルやチップをその要素で包む。前者は class="time" ごと
+    開き直すので、欄が増えてタイトルも欄の中に入る＝⑥にも出る。後者は _time_reopened。Chrome で確かめた＝2026-11-10・Reviewer・書式の要素14種・
+    1種を1行1ページ・n=1）。欄の中で table・object・script など（_KEEP_OPEN_TAGS）が閉じていない行も None（ブラウザは外側の閉じタグで欄を
+    閉じないので、タイトルやチップも欄の中に入るか、文字として読まれる。MathML・SVG の要素は math・svg の中にあるときだけ＝_time_keeps_open。
+    試した要素は _KEEP_OPEN_TAGS の注釈）。"""
+    m, stop = hit
+    if m.group(1).lower() in _FORMATTING_TAGS:
+        return None
+    r = _time_range(block, m)
+    if r is None or r[1] > stop:
+        return None
+    inner = _time_inner_open(block, m.end(), r[1])
+    if _time_keeps_open(inner) or any(name in _FORMATTING_TAGS for name in inner):
+        return None
+    return r[1]
+
+
+def _time_reopened(block, hit):
+    """閉じていない時刻の欄（hit＝_time_open_unclosed の戻り値）で、ブラウザが欄を class を持つ開きタグ以前で閉じるが、欄の中に閉じていない
+    書式の要素があるので、閉じた後でその要素を開き直す行か（v2.16 / board_edit.py v1.12。<span class="time">9:00 <b>am</div><p class="task-title">…）。
+    画面では後ろのタイトルやチップがその書式で表示され、board.js の欄の中には class を持つ要素が入らない（⑥には出ない）。ブラウザが欄を
+    閉じる位置に、中で閉じていない要素の閉じタグ（書式の要素を含む）と欄の閉じタグを足すと、書式の要素は開き直されなくなり、タイトルや
+    チップを包んでいた書式が外れる（行の鍵は変わらない。Chrome で確かめた＝2026-11-10・Reviewer・18通り・n=1）。画面が変わるので、
+    _time_close_at は reopen が真のとき（board_edit.py の close-time --confirmed）だけ補い、それ以外は "format" を返す。欄そのものが書式の
+    要素の行と、欄の中に table・object・script などがある行（_KEEP_OPEN_TAGS）は含めない（_time_screen_closed の注釈）。"""
+    m, stop = hit
+    if m.group(1).lower() in _FORMATTING_TAGS:
+        return False
+    r = _time_range(block, m)
+    if r is None or r[1] > stop:
+        return False
+    inner = _time_inner_open(block, m.end(), r[1])
+    if _time_keeps_open(inner):
+        return False
+    return any(name in _FORMATTING_TAGS for name in inner)
+
+
+def _time_inner_open(block, start, end):
+    """start から end までに開いて、end でまだ閉じていない要素の名前（外側から順。v2.16 / board_edit.py v1.12。_time_close_at が足す閉じタグ）。
+    void 要素と /> は数えず、開いていない要素の閉じタグは読み飛ばす。p を閉じる開きタグ（_P_CLOSERS）が来たら、開いている p をそこで閉じたことに
+    する（ブラウザと同じ。<span class="time">9:00 <p>a<p>b</div> の2つ目の <p> は1つ目を閉じる）。"""
+    inner = []
+    for t in _TAG_TOKEN_RE.finditer(block, start, end):
+        name = t.group(2).lower()
+        if not t.group(1):
+            if name in _P_CLOSERS and "p" in inner:
+                while inner.pop() != "p":
+                    pass
+            if not t.group(3) and name not in _VOID_TAGS:
+                inner.append(name)
+        elif name in inner:
+            while inner.pop() != name:
+                pass
+    return inner
+
+
+def _time_close_at(block, reopen=False):
     """閉じていない時刻の欄に閉じタグを補う位置（v2.14 / board_edit.py v1.10。board_edit.py の close-time と、Deck の日付の切り替え）。
 
-    (位置, タグ名) か、補えない理由: "none"（閉じていない欄が無い）・"div"（欄が div）・"after"（時刻の文字の後ろ、class を
+    (位置, 足す閉じタグの文字列〔ふつうは "</タグ名>"〕) か、補えない理由: "none"（閉じていない欄が無い）・"div"（欄が div）・"after"（時刻の文字の後ろ、class を
     持つタグより前にタグで囲んだ文字がある＝補うと欄の外へ出て鍵が変わる）・"text"（欄の始まりの直後に時刻の文字が無い）・
-    "count"（欄と同じ名前のタグの開きと閉じの数が、1つ足して合う形でない）。位置は時刻の文字（後ろの空白を除く）の直後。"""
+    "count"（欄と同じ名前のタグの開きと閉じの数が、1つ足して合う形でない）・"format"（下の _time_reopened）。位置は時刻の文字（後ろの空白を除く）の直後。
+    ただし、ブラウザが欄を class を持つ開きタグ以前で閉じる形（_time_screen_closed）では、ブラウザが閉じる位置（その手前の空白を除く）に補い、
+    "div"・"after"・"text"・"count" は見ない（補っても画面と行の鍵は変わらず、DOM で変わるのは欄の終わりの空白が欄の外へ出ることだけのため。
+    v2.16 / board_edit.py v1.12。v2.15 / board_edit.py v1.11 までは
+    この形でも時刻の文字の直後に補い、時刻の文字の後ろにタグで囲んだ文字がある形〔<p class="time">9:00 <b>am</b><div>…・
+    <div><span class="time">9:00 <span>am</div>…・<div><span class="time">9:00</div>am <p class="task-title">…〕は "after"、欄に時刻の文字が無い形
+    〔<div><span class="time">  </div>…〕は "text" で断った）。欄の中で開いて閉じていない要素（<span class="time">9:00 <span>am</div> の <span>）が
+    あれば、その閉じタグも内側から順に足す（ブラウザはその位置でそれらも閉じる。数え方は _time_inner_open）。
+    欄そのものが書式の要素の行と、欄の中で table・object・script などが閉じていない行はこの扱いをせず、上の判定に戻る（_time_screen_closed が
+    None）。欄の中に閉じていない書式の要素がある行（_time_reopened）は、reopen が真なら同じ位置に同じく補い（書式の要素の閉じタグも足すので、
+    タイトルやチップを包んでいた書式が外れ、画面が変わる。board_edit.py の close-time --confirmed）、偽なら "format" を返す（Deck の日付の
+    切り替えは偽で呼び、補わずに欄を外す。外す範囲に書式の要素の開きタグが入るので、同じく書式が外れる）。"""
     hit = _time_open_unclosed(block)
     if hit is None:
         return "none"
     m, stop = hit
     tag = m.group(1)
+    shown = _time_screen_closed(block, hit)
+    if shown is not None:
+        pos = m.end() + len(block[m.end():shown].rstrip())
+        return pos, "".join("</%s>" % name for name in reversed(_time_inner_open(block, m.end(), pos))) + "</%s>" % tag
+    if _time_reopened(block, hit):
+        if not reopen:
+            return "format"
+        r = _time_range(block, m)
+        pos = m.end() + len(block[m.end():r[1]].rstrip())
+        return pos, "".join("</%s>" % name for name in reversed(_time_inner_open(block, m.end(), pos))) + "</%s>" % tag
     if tag.lower() == "div":
         return "div"
     region = block[m.end():stop]
@@ -429,19 +578,24 @@ def _time_close_at(block):
     closes = len(re.findall(r"</%s\s*>" % re.escape(tag), block, re.I))
     if opens != closes + 1:
         return "count"
-    return m.end() + len(text), tag
+    return m.end() + len(text), "</%s>" % tag
 
 
 def _time_unclosed(block):
     return _time_open_unclosed(block) is not None
 
 
-def block_close_time(blines):
+def block_close_time(blines, confirmed=False):
     """閉じタグの無い時刻の欄に閉じタグを補う（close-time・v1.10）。欄の時刻の文字（開きタグの直後から最初のタグの手前まで。
     後ろの空白は含めない）の直後に </タグ名> を1つ足す。その後ろ、class を持つタグより前に文字があれば（足すと欄の外へ出て
-    行の鍵が変わるので）断る。補えない形なら OpError。"""
+    行の鍵が変わるので）断る。ただし、ブラウザが欄を class を持つタグ以前で閉じる形（画面は正しい形＝_time_screen_closed）では、
+    ブラウザが閉じる位置（その手前の空白を除く）に足し、この断り方はしない（v1.12。画面も鍵も変わらない。欄の中で開いて閉じていない要素が
+    あれば、その閉じタグも足す）。書式の要素〔b・i・a など＝_FORMATTING_TAGS〕が欄の中で閉じていない行（_time_reopened）は、confirmed
+    （--confirmed）のときだけ同じく補い（書式の要素の閉じタグも足すので、タイトルやチップを包んでいた書式が外れ、画面が変わる）、そうでなければ
+    断る（"format"）。欄そのものが書式の要素の行と、欄の中で table・object・script などが閉じていない行はこの扱いをせず上の判定に戻る。
+    補えない形なら OpError（断った後の扱いは SKILL.md「ボードの点検」の⑥）。"""
     block = "".join(blines)
-    at = _time_close_at(block)
+    at = _time_close_at(block, reopen=confirmed)
     if at == "none":
         raise OpError("この項目の時刻の欄には閉じタグがあります（直すものはありません）。何も書いていません。")
     if at == "div":
@@ -451,6 +605,10 @@ def block_close_time(blines):
         # 時刻の文字の後ろ、class を持つタグより前に文字がある（<b>am</b> など）。補うと欄の外へ出て鍵が変わるので断る
         raise OpError("この項目の時刻の欄には、時刻の文字の後ろにタグで囲んだ文字があり、閉じタグを足す位置を決められません。何も書いていません。"
                       "SKILL.md「ボードの点検」の①の直し方（restore）で直してください。")
+    if at == "format":
+        raise OpError("この項目の時刻の欄の中に閉じていない書式の要素（b・i など）があり、ブラウザは時刻の欄を閉じた後でその要素を開き直して、"
+                      "後ろのタイトルやチップをその書式で表示しています。閉じタグを補うとその書式が外れ、画面が変わります（タスクの文言・状態・行の鍵は変わりません）。"
+                      "何も書いていません。板のその行をユーザーに見せ、書式が外れてよいと確かめてから、--confirmed を付けてもう一度呼んでください。")
     if at == "text":
         raise OpError("この項目の時刻の欄の文字が、欄の始まりの直後に見つからないため、閉じタグを足す位置を決められません。何も書いていません。"
                       "ユーザーに時刻の欄の文字を確かめてください。")
@@ -461,12 +619,12 @@ def block_close_time(blines):
         closes = len(re.findall(r"</%s\s*>" % re.escape(tag), block, re.I))
         raise OpError("この項目の <%s> と </%s> の数（%d と %d）が、閉じタグを1つ足して合う形ではありません。何も書いていません。"
                       "閉じタグが項目の終わりに置かれた形か、閉じタグのある欄の中に class を持つ要素がある形かもしれません。SKILL.md「ボードの点検」の⑥のとおり、restore するかをユーザーに確かめてください。" % (tag, tag, opens, closes))
-    pos, tag = at
-    return (block[:pos] + "</%s>" % tag + block[pos:]).splitlines(keepends=True)
+    pos, close = at
+    return (block[:pos] + close + block[pos:]).splitlines(keepends=True)
 
 
 def op_close_time(text, nl, a):
-    return _item_op(text, nl, a, block_close_time)
+    return _item_op(text, nl, a, lambda b: block_close_time(b, getattr(a, "confirmed", False)))
 
 
 def _canon_label(label):
@@ -641,6 +799,457 @@ def _div_balance(text):
     """コメントの外の <div の数 − </div> の数。"""
     blanked = "".join(_blank_comments(text.splitlines(keepends=True)))
     return len(re.findall(r"<div\b", blanked)) - blanked.count("</div>")
+
+
+# 閉じタグまでを文字として読む要素（_swallow_open・v2.17 / board_edit.py v1.13 / guard.py v1.1）。
+# HTML の構文解析の決まりのうち、HTML として読む所で閉じタグまでを文字として読む要素: RCDATA＝textarea・title、RAWTEXT＝style・xmp・iframe・
+# noembed・noframes・noscript（ボードはスクリプトが動く状態で開くので RAWTEXT）、script（script data）、plaintext（閉じタグを持たない）。
+# svg・math の中（foreign content）では文字として読まないので数えない（<svg><style>・<svg><title> は閉じていなくても中の要素は読まれる）。
+# K16 の当たりと Chrome の DOM が合うことは tests/test_board_browser.py の TestSwallowInBrowser で確かめる
+_SWALLOW_TAGS = frozenset(("textarea", "title", "style", "xmp", "iframe", "noembed", "noframes", "noscript", "script", "plaintext"))
+# svg・math の中で、ブラウザが svg・math を閉じて HTML として読み直す開きタグ（HTML の構文解析の foreign content の決まり。font は color・face・size の属性があるときだけ）
+_FOREIGN_BREAKOUT = frozenset(("b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed",
+                               "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr",
+                               "ol", "p", "pre", "ruby", "s", "small", "span", "strong", "strike", "sub", "sup", "table", "tt", "u",
+                               "ul", "var"))
+_SW_TAG_RE = re.compile(r"<(/?)([A-Za-z][^\t\n\f\r />]*)")
+_SW_ATTR_NAME_RE = re.compile(r"[^\t\n\f\r />][^\t\n\f\r /=>]*")
+_SW_UNQUOTED_RE = re.compile(r"[^\t\n\f\r >]*")
+_SW_SPACE = "\t\n\f\r "
+
+
+def _sw_tag_end(text, i):
+    """開きタグ・閉じタグの名前の直後（i）から、タグの終わりの > の直後まで読む（属性の値の引用符の中の > は読み飛ばす）。
+    (> の直後, /> で終わったか, 属性〔名前は小文字・最初のものだけ〕) か、文書の終わりまで > が無ければ None。"""
+    n = len(text)
+    attrs = {}
+    while i < n:
+        c = text[i]
+        if c in _SW_SPACE:
+            i += 1
+        elif c == ">":
+            return i + 1, False, attrs
+        elif c == "/":
+            if text.startswith(">", i + 1):
+                return i + 2, True, attrs
+            i += 1
+        else:
+            m = _SW_ATTR_NAME_RE.match(text, i)
+            name, i = m.group(0).lower(), m.end()
+            while i < n and text[i] in _SW_SPACE:
+                i += 1
+            value = ""
+            if text.startswith("=", i):
+                i += 1
+                while i < n and text[i] in _SW_SPACE:
+                    i += 1
+                if i < n and text[i] in "\"'":
+                    j = text.find(text[i], i + 1)
+                    if j == -1:
+                        return None
+                    value, i = text[i + 1:j], j + 1
+                else:
+                    m = _SW_UNQUOTED_RE.match(text, i)
+                    value, i = m.group(0), m.end()
+            attrs.setdefault(name, value)
+    return None
+
+
+_SW_SCRIPT_RE = re.compile(r"<!--|-->|<(/?)script(?=[\t\n\f\r />])", re.I)
+
+
+def _sw_text_end(text, start, name):
+    """閉じタグまでを文字として読む要素（name）の中身の始まり（start）から、閉じタグの終わりまで読む。(閉じタグの終わり, 読み込みを文字にしたか) か、
+    閉じていなければ None（閉じタグが無いか、閉じタグの > が無いまま文書が終わる。plaintext は閉じタグを持たないので、いつも None）。
+    script 以外は、最初の閉じタグで閉じる（中に同じ名前の開きタグがあっても文字として読むだけ＝<textarea>a<textarea>b</textarea> は閉じている）。
+    script は script data の決まり（<!-- の後の <script で二重になり、そこでは </script> で閉じない）をなぞって閉じる所を決める。2つ目の値は、
+    文字として読まれた範囲に src が board.js を指す <script（_sw_is_board_js）が入っているかで、_swallow_open が当たりの種類を "load" にするのに使う
+    （当てるかどうかは _sw_lost と _sw_board_js_in で決める）。"""
+    if name == "plaintext":
+        return None
+    if name != "script":
+        m = re.compile(r"</%s(?=[\t\n\f\r />])" % name, re.I).search(text, start)
+        if not m:
+            return None
+        end = _sw_tag_end(text, m.end())
+        return (end[0], False) if end else None      # > の無いまま文書が終わる閉じタグでは、要素は閉じない
+    state, i = 0, start      # 0＝script data・1＝<!-- の後（escaped）・2＝その中の <script の後（double escaped）
+    loads = False
+    while True:
+        m = _SW_SCRIPT_RE.search(text, i)
+        if not m:
+            return None
+        tok = m.group(0)
+        if tok == "<!--":
+            if state == 0:
+                state = 1
+            i = m.end() - 2          # <!--> の -- を --> にも数える
+        elif tok == "-->":
+            if state:
+                state = 0
+            i = m.end()
+        elif m.group(1):            # </script
+            if state == 2:
+                state, i = 1, m.end()
+                continue
+            end = _sw_tag_end(text, m.end())
+            return (end[0], loads) if end else None
+        else:                       # <script
+            if state == 1:
+                state = 2
+            tag = _sw_tag_end(text, m.end())
+            if tag is not None and _sw_is_board_js(tag[2].get("src")):
+                loads = True
+            i = m.end()
+
+
+def _sw_is_board_js(src):
+    """script の src（属性の値。無ければ None）が board.js を指すか（テンプレートの <script src="board.js"> の形。? や # の後ろとパスの前の部分は見ない）。"""
+    if src is None:
+        return False
+    path = re.split(r"[?#]", html.unescape(src).strip(), 1)[0]
+    return re.split(r"[/\\]", path)[-1].lower() == "board.js"
+
+
+# 画面から消えると数える要素の開きタグ（項目・見出し・行の部品。class の書き方は _ROW_PART_RE と同じ広さ。< と > をまたがない）
+_SW_ROW_RE = re.compile(r'<[A-Za-z][\w-]*\b[^<>]*?\sclass\s*=\s*["\']?(?:[^"\'<>]*\s)?(?:task-title|task-note|chips|chip|item|section-label)(?=["\'\s>/])', re.I)
+_SW_START_RE = re.compile(r"<[A-Za-z]")
+
+
+# 実行される script の type（HTML の決まりの JavaScript の MIME 型。大文字小文字を問わない）
+_SW_JS_TYPES = frozenset(("application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript",
+                          "text/ecmascript", "text/javascript", "text/javascript1.0", "text/javascript1.1", "text/javascript1.2",
+                          "text/javascript1.3", "text/javascript1.4", "text/javascript1.5", "text/jscript", "text/livescript",
+                          "text/x-ecmascript", "text/x-javascript"))
+_SW_SCRIPT_OPEN_RE = re.compile(r"<script(?=[\t\n\f\r />])", re.I)
+
+
+def _sw_runs(attrs):
+    """script の属性（attrs）が、実行される board.js の読み込みか（最初の src が board.js を指し、nomodule が無く、type が無いか空か JavaScript の MIME 型。
+    type が無く language があれば、type を text/<language> とみなす。type="module" は file: のページでは読み込めないので数えない）。
+    template の中・svg・math の中・閉じていない script は、呼び出し側が見る（K16 の「board.js が止まる形」・2026-11-10 ユーザー決定）。"""
+    if not _sw_is_board_js(attrs.get("src")) or "nomodule" in attrs:
+        return False
+    t = attrs.get("type")
+    if t is None and attrs.get("language"):
+        t = "text/" + attrs["language"]          # type が無く language があれば text/<language>（HTML の決まり）
+    return t is None or not t.strip() or t.strip().lower() in _SW_JS_TYPES
+
+
+_SW_SRC_RE = re.compile(r"""[\t\n\f\r /]src[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r >]+))""", re.I)
+
+
+def _sw_src_board_js(text, a, b):
+    """タグの中（text[a:b]）の src の属性のどれか（重複したものも）が board.js を指すか（board.js が止まる形の候補。属性によらない）。
+    _SW_SRC_RE は属性の値の中の文字（<div title="<script src='board.js'>">）も拾う。その形も、board.js が実行されない候補に数える。"""
+    return any(_sw_is_board_js(m.group(1) if m.group(1) is not None else m.group(2) if m.group(2) is not None else m.group(3))
+               for m in _SW_SRC_RE.finditer(text, a, b))
+
+
+def _sw_board_js_in(text, a, b):
+    """text[a:b]（ブラウザが要素として読まない所）に、src のどれかが board.js を指す <script> の開きタグ（_sw_src_board_js。属性によらない）があるか。"""
+    for m in _SW_SCRIPT_OPEN_RE.finditer(text, a, b):
+        tag = _sw_tag_end(text, m.end())
+        if tag is not None and _sw_src_board_js(text, m.end() - 1, tag[0]):
+            return True                              # 候補は src が board.js を指すものすべて（2026-11-10 ユーザー決定）
+    return False
+
+
+def _sw_lost(text, a, b, deck):
+    """text[a:b]（ブラウザが要素として読まない所）に、項目・見出し・行の部品（_SW_ROW_RE）の開きタグか、DECK 領域（deck＝(START の位置, END の位置) か None）の
+    中の開きタグがあるか（K16 の基準＝画面から消える要素があるか・2026-11-10 ユーザー決定）。"""
+    if a >= b:
+        return False
+    if _SW_ROW_RE.search(text, a, b):
+        return True
+    if deck:
+        lo, hi = max(a, deck[0]), min(b, deck[1])
+        if lo < hi and _SW_START_RE.search(text, lo, hi):
+            return True
+    return False
+
+
+def _swallow_open(text):
+    """K16（構造の検査・v2.17 / board_edit.py v1.13 / guard.py v1.1。基準は 2026-11-10 ユーザー決定）の最初の当たり。(位置, 種類, 名前) か、
+    無ければ None（本体は _sw_scan）。当てるのは次の2つ。
+    ①画面から消える形: ブラウザが要素として読まない所（閉じタグまでを文字として読む要素〔_SWALLOW_TAGS〕の中・コメントの中・svg や math の中の
+    CDATA の中・<! と <? で始まる宣言の中・タグの中〔引用符の閉じていない属性の値を含む〕・<template> の中）に、項目・見出し・行の部品か DECK 領域の
+    要素の開きタグが入る（_sw_lost）。閉じていても、閉じるのが後ろの別の要素・コメントの閉じタグなら同じく当てる。自分の --> で閉じるコメントの中の行
+    （書き手がわざと隠した行。テンプレートの記入例など）は当てない。後ろのコメントの --> で閉じるコメントでも、間に行・見出し・Deck の欄が無ければ当てない
+    （DECK の START マーカーだけを飲み込む形は K3 にも当たらない〔K3 は文字で数える〕が、board.js の「ボードの点検」の②に出る＝Chrome で確かめた・
+    2026-11-10・ヘッドレス・実物のテンプレートの板・n=1）。
+    ②board.js が止まる形: src が board.js を指す <script>（属性の値の中の文字も含め、属性によらない＝_sw_src_board_js・_sw_board_js_in）が、
+    要素として読まれない所・template・svg・math の中にあるか、閉じていないか、属性で実行されない形（_sw_runs が偽）で、実行される board.js の
+    読み込み（_sw_runs が真で、閉じていて、template・svg・math の中でない）を文書の終わりまでに1つも読まない。
+    種類は "element"（_SWALLOW_TAGS の要素か template）・"comment"（コメントか宣言）・"cdata"・"tag"・"load"（②。①でも、文字として読まれた範囲に
+    board.js の読み込みが入る script は "load"）。②の名前は、読み込みを要素として読まない所を作った要素の名前（コメントと宣言は ""、CDATA は "![CDATA["）。
+    板が board.js を head で読む形（テンプレート・migrate_board_js が移した板）なら、body の①では board.js は動き、ふつうは画面の「ボードの点検」の⑦（board.js の
+    TB_CUT）に出る。末尾で読む形の板では、①が board.js の読み込みも飲み込むと②にもなり、どの知らせも画面に出ない。
+
+    文書の全体（head・手書きの範囲・DECK 領域）を、ブラウザの HTML の構文解析と同じ順で先頭から1回読む（コメント・属性の値の中は読み飛ばす）。
+    svg・math の中（foreign content）は別に扱う: その中では _SWALLOW_TAGS を文字として読まない。HTML integration point（svg の foreignObject・
+    desc・title、math の mi・mo・mn・ms・mtext、encoding が text/html か application/xhtml+xml の annotation-xml）の中の開きタグは HTML として読む。
+    svg・math の中で _FOREIGN_BREAKOUT の開きタグか </p>・</br> が来たら、ブラウザと同じく svg・math を閉じて HTML として読む。閉じタグは、HTML の要素の中では
+    svg・math の境界を越えて閉じない（<svg><foreignObject><span>x</svg> の </svg> は読み飛ばす）。
+    なぞらない所（申告する限界）: 要素の暗黙の閉じ（p・li など）・表の foster parenting・書式の要素の付け直しなど木を組み立てる段階の細部
+    （svg・math の閉じ方にだけ効く）。<template> の中も同じ読み方をする。"""
+    return _sw_scan(text)[0]
+
+
+def _sw_scan(text):
+    """_swallow_open の本体。(当たり〔_swallow_open の戻り値〕, ran) を返す。ran＝実行される board.js の <script>（_sw_runs で、閉じていて、
+    template・svg・math の中でない）を、当たりを返す所までに読んだか（K17 の「書く前の版にあって出来上がりに無い」の判定に使う）。"""
+    # K16 の基準は「画面から消える要素がある形」（2026-11-10 ユーザー決定。board.js が動くかどうかは見ない）。ブラウザが要素として読まない所
+    # （閉じタグまでを文字として読む要素の中・コメントの中・CDATA の中・タグの中・閉じタグの無い <template> の中など）に、項目・見出し・行の部品か
+    # DECK 領域の要素の開きタグがあれば当てる（_sw_lost）。閉じていても、閉じるのが後ろの別の要素・コメントの閉じタグなら同じく当てる。
+    # Chrome で「当たる ⇔ ソースの項目・見出し・Deck の要素のどれかが DOM に HTML の要素として無い」を確かめた＝TestSwallowInBrowser
+    stack = []          # 開いている要素 [名前, 名前空間（"html"・"svg"・"math"）, integration point か, 開きタグの終わり〔template だけ〕]
+    segs = [{}]         # HTML の要素の名前ごとの数を、svg・math の要素で区切った区間ごとに持つ（segs[-1] が stack の一番上の区間）。閉じタグが
+                        # その区間で開いていない要素のものなら、stack を辿らずに読み飛ばす（辿り直しで遅くならないため）
+    fcount = {}         # stack の中の svg・math の要素の名前ごとの数（同じ理由。0 なら svg・math の要素を辿らない）
+    hidx = []           # stack の中の HTML の要素の位置（昇順。hidx[-1] より上はすべて svg・math の要素）
+    tmpl = []           # stack の中の template の (位置, 開きタグの終わり)
+    s = text.find(MARKER_START)
+    e = text.find(MARKER_END, s + 1) if s != -1 else -1
+    deck = (s, e) if s != -1 and e != -1 else None
+    i = 0
+    bang = text.find("--!>")     # コメントを閉じる --!> の次の位置（無ければ -1。コメントごとに文書の終わりまで探し直さない）
+    dash = text.find("-->")      # コメントを閉じる --> の次の位置（同じ理由）
+    opener = text.find("<!--")   # 次の <!-- の位置（同じ理由）
+    n = len(text)
+    # board.js が止まる形（2026-11-10 ユーザー決定）: 実行されるはずの board.js の <script>（_sw_runs）が、要素として読まれない所に入るか、
+    # template・svg・math の中にあるか、閉じていない。その最初のもの（cand）を控え、実行される board.js の <script> を読まずに文書の終わりまで
+    # 来たら、"load" で返す（ran＝実行される board.js の <script> を読んだ。画面から消える要素の当たりは、見つけた所ですぐ返す）
+    cand = None
+    ran = False
+
+    def missed(pos, name, a, b):
+        return (pos, "load", name) if cand is None and not ran and _sw_board_js_in(text, a, b) else cand
+
+    while True:
+        lt = text.find("<", i)
+        if lt == -1:
+            # 閉じタグの無い template は文書の終わりまで（中身は DOM の外＝template の内容）。一番外側の範囲だけを見る（内側はその中にある）
+            if tmpl and _sw_lost(text, tmpl[0][1], n, deck):
+                return (tmpl[0][0], "element", "template"), ran
+            if tmpl:
+                cand = missed(tmpl[0][0], "template", tmpl[0][1], n)
+            return (None if ran else cand), ran
+        top = stack[-1] if stack else None
+        foreign = top is not None and top[1] != "html" and not top[2]
+        if text.startswith("<!--", lt):
+            if text.startswith(">", lt + 4):
+                i = lt + 5
+                continue
+            if text.startswith("->", lt + 4):
+                i = lt + 6
+                continue
+            if bang != -1 and bang < lt + 4:
+                bang = text.find("--!>", lt + 4)
+            if dash != -1 and dash < lt + 4:
+                dash = text.find("-->", lt + 4)
+            ends = [x for x in (dash, bang) if x != -1]
+            if not ends:
+                if _sw_lost(text, lt + 4, n, deck):
+                    return (lt, "comment", ""), ran
+                cand = missed(lt, "", lt + 4, n)
+                return (None if ran else cand), ran
+            end = min(ends)
+            # 閉じるのが後ろの別のコメントの --> なら（間に <!-- がある）、その間の行は画面から消える。自分の --> で閉じるコメントは
+            # 書き手がわざと隠したもの（テンプレートの記入例のコメントなど）なので当てない
+            if opener != -1 and opener < lt + 4:
+                opener = text.find("<!--", lt + 4)
+            if opener != -1 and opener < end and _sw_lost(text, lt + 4, end, deck):
+                return (lt, "comment", ""), ran
+            cand = missed(lt, "", lt + 4, end)      # コメントの中の board.js の読み込みは実行されない（わざと隠したものも数える）
+            i = end + (3 if text.startswith("-->", end) else 4)
+            continue
+        if top is not None and top[1] != "html" and text.startswith("<![CDATA[", lt):
+            # CDATA は、いまの要素が HTML の要素でなければ読む（integration point の中の直下も＝HTML の構文解析の tokenizer の決まり）
+            end = text.find("]]>", lt + 9)
+            if _sw_lost(text, lt + 9, n if end == -1 else end, deck):
+                return (lt, "cdata", ""), ran
+            cand = missed(lt, "![CDATA[", lt + 9, n if end == -1 else end)
+            if end == -1:
+                return (None if ran else cand), ran
+            i = end + 3
+            continue
+        if text.startswith("<!", lt) or text.startswith("<?", lt) or (text.startswith("</", lt) and not _SW_TAG_RE.match(text, lt)
+                                                                         and not text.startswith("</>", lt)):
+            end = text.find(">", lt + 2)
+            if _sw_lost(text, lt + 2, n if end == -1 else end, deck):
+                return (lt, "comment", ""), ran
+            cand = missed(lt, "", lt + 2, n if end == -1 else end)
+            if end == -1:
+                return (None if ran else cand), ran
+            i = end + 1
+            continue
+        m = _SW_TAG_RE.match(text, lt)
+        if not m:
+            i = lt + (3 if text.startswith("</>", lt) else 1)
+            continue
+        end = _sw_tag_end(text, m.end())
+        if end is None:
+            if _sw_lost(text, m.end(), n, deck):
+                return (lt, "tag", m.group(2).lower()), ran
+            cand = missed(lt, m.group(2).lower(), m.end(), n)
+            return (None if ran else cand), ran
+        stop, self_closing, attrs = end
+        if text.find("<", m.end(), stop) != -1:
+            if _sw_lost(text, m.end(), stop, deck):
+                return (lt, "tag", m.group(2).lower()), ran     # 引用符の閉じていない属性の値が、後ろの行のタグを取り込んだ
+            cand = missed(lt, m.group(2).lower(), m.end(), stop)
+        name = m.group(2).lower()
+        i = stop
+        if m.group(1) and name in ("p", "br") and top is not None and top[1] != "html":
+            # svg・math の中の </p>・</br> は、開きタグの _FOREIGN_BREAKOUT と同じく svg・math を閉じる（HTML の構文解析の foreign content の決まり）
+            while stack and stack[-1][1] != "html" and not stack[-1][2]:
+                fcount[stack.pop()[0]] -= 1
+                segs.pop()
+            continue
+        if m.group(1):
+            # 閉じタグ。svg・math の中（integration point を含む）では、上から同じ名前の svg・math の要素を探して閉じる。HTML の要素に
+            # 当たったら、そこから下は HTML の決まりで探す（svg・math の要素に当たったらそこで止める＝読み飛ばす）
+            k = len(stack) - 1
+            if not fcount.get(name):
+                k = hidx[-1] if hidx else -1      # 上の svg・math の要素に同じ名前は無い
+            while k >= 0 and stack[k][1] != "html":
+                if stack[k][0] == name:
+                    for x in stack[k:]:
+                        fcount[x[0]] -= 1
+                    del segs[len(segs) - (len(stack) - k):]
+                    del stack[k:]
+                    break
+                k -= 1
+            else:
+                f = len(stack) - 1 - k          # 上から通り過ぎた svg・math の要素の数
+                seg = segs[len(segs) - 1 - f]
+                if seg and seg.get(name):
+                    while stack[k][0] != name and stack[k][0] != "template":
+                        k -= 1
+                    if stack[k][0] != name:
+                        continue                    # template の外の要素の閉じタグは、template の中では読み飛ばす（template は境界。境界で辿るのを止める）
+                    for x in stack[k:]:
+                        if x[1] == "html":
+                            seg[x[0]] -= 1
+                        else:
+                            fcount[x[0]] -= 1
+                    while hidx and hidx[-1] >= k:
+                        hidx.pop()
+                    while tmpl and tmpl[-1][2] >= k:
+                        tp, tend, _k = tmpl.pop()   # 閉じた template の中身（DOM の外）。一番外側が閉じたときだけ見る（入れ子ごとに見直すと遅い）
+                        if not tmpl:
+                            if _sw_lost(text, tend, lt, deck):
+                                return (tp, "element", "template"), ran
+                            cand = missed(tp, "template", tend, lt)
+                    del segs[len(segs) - f:]
+                    del stack[k:]
+            continue
+        if foreign and (name in _FOREIGN_BREAKOUT or (name == "font" and ("color" in attrs or "face" in attrs or "size" in attrs))):
+            while stack and stack[-1][1] != "html" and not stack[-1][2]:
+                fcount[stack.pop()[0]] -= 1
+                segs.pop()
+            top = stack[-1] if stack else None
+            foreign = False
+        if top is not None and top[1] == "math" and top[2] and top[0] != "annotation-xml" and name in ("mglyph", "malignmark"):
+            foreign = True       # math の mi などの中の mglyph・malignmark は math の要素
+        if foreign:
+            if name == "script" and cand is None and not ran and _sw_src_board_js(text, m.end() - 1, stop):
+                cand = (lt, "load", "script")       # svg・math の script は HTML の script ではないので、board.js は実行されない
+            ns = "svg" if name == "svg" else top[1]
+            point = ((ns == "svg" and name in ("foreignobject", "desc", "title"))
+                     or (ns == "math" and name in ("mi", "mo", "mn", "ms", "mtext"))
+                     or (ns == "math" and name == "annotation-xml"
+                         and attrs.get("encoding", "").lower() in ("text/html", "application/xhtml+xml")))
+            if not self_closing:
+                stack.append((name, ns, point))
+                segs.append(None)   # 区間の数は、HTML の要素を初めて置いたときに作る（深い svg で空の dict を積まない）
+                fcount[name] = fcount.get(name, 0) + 1
+            continue
+        if name in ("svg", "math"):
+            if not self_closing:
+                stack.append((name, name, False))
+                segs.append(None)
+                fcount[name] = fcount.get(name, 0) + 1
+            continue
+        if name in _SWALLOW_TAGS:
+            r = _sw_text_end(text, stop, name)
+            if _sw_lost(text, stop, n if r is None else r[0], deck):
+                return (lt, ("load" if r is not None and r[1] else "element"), name), ran
+            if name == "script" and _sw_src_board_js(text, m.end() - 1, stop):
+                if r is not None and not tmpl and _sw_runs(attrs):
+                    ran = True                      # 実行される board.js の読み込み（閉じていて、template の中でない）
+                elif cand is None and not ran:
+                    cand = (lt, "load", "script")   # 閉じていない（文書の終わりまで）か、template の中か、属性で実行されない
+            cand = missed(lt, name, stop, n if r is None else r[0])
+            if r is None:
+                return (None if ran else cand), ran
+            i = r[0]
+            continue
+        if name not in _VOID_TAGS:
+            if name == "template":
+                tmpl.append((lt, stop, len(stack)))
+            hidx.append(len(stack))
+            stack.append((name, "html", False))
+            if segs[-1] is None:
+                segs[-1] = {}
+            segs[-1][name] = segs[-1].get(name, 0) + 1
+
+
+def swallow_text(text, hit):
+    """_swallow_open の当たり（hit）を、知らせの文の頭にする（K16・Deck の watcher.log）。行は1から数え、DECK 領域の中ならそう添える。"""
+    pos, kind, name = hit
+    line = text.count("\n", 0, pos) + 1
+    s = text.find(MARKER_START)
+    e = text.find(MARKER_END, s) if s != -1 else -1
+    where = "%d 行目・DECK 領域の中" % line if s != -1 and e != -1 and s < pos < e else "%d 行目" % line
+    if kind == "load":
+        what = ("ボードのスクリプトの読み込み（<script src=\"board.js\">）を実行させない、svg・math の中の <![CDATA[" if name == "![CDATA[" else
+                "ボードのスクリプトの読み込み（<script src=\"board.js\">）を実行させない <%s>" % name if name else
+                "ボードのスクリプトの読み込み（<script src=\"board.js\">）を実行させない HTML のコメントか宣言")
+    elif kind == "element" and name == "plaintext":
+        what = "<plaintext>（閉じタグを持たない要素。後ろをすべて文字として読む）"
+    elif kind == "element" and name == "template":
+        what = "後ろの行を中身に取り込む <template>"
+    elif kind == "element":
+        what = "後ろの行を文字として読む <%s>" % name
+    elif kind == "comment":
+        what = "後ろの行を取り込む HTML のコメントか宣言"
+    elif kind == "cdata":
+        what = "svg・math の中の、後ろの行を取り込む <![CDATA["
+    else:
+        what = "後ろの行を取り込むタグ <%s（> が無いか、属性の値の引用符が閉じていない）" % name
+    return "%s（%s）" % (what, where)
+
+
+# board.js の読み込みの形（2026-11-10 ユーザー決定。テンプレートは head に defer で読む。migrate_board_js が末尾の形の板を移す）
+_BOARD_JS_TAIL_RE = re.compile(r'[ \t]*<script src="board\.js"></script>[ \t\r\n]*\Z')
+_BOARD_CSS_LINK = '<link rel="stylesheet" href="board.css">'
+_BOARD_JS_HEAD = '<script src="board.js" defer></script>'
+
+
+def migrate_board_js(text):
+    """末尾の形の板（body の最後に <script src="board.js"></script> がある・2026-11-10 以前のテンプレート）を、head の形（board.css の
+    読み込みの直後に <script src="board.js" defer></script>）へ移した本文を返す（Deck v2.18 / board_edit.py v1.14・2026-11-10 ユーザー決定）。
+    移さないときは None。移すのは、その1行が文書の最後のタグで、board.css の読み込みがちょうど1つあり、head の形の読み込みがまだ無く、
+    板が崩れていない（項目の入れ子・閉じタグの欠落〔board_structure_ok〕と K16〔_sw_scan の当たり〕が無く、board.js が実行される）とき。
+    移した後も K16 に当たらず board.js が実行されることを確かめる。手書きの行・見出し・DECK 領域・ヘッダは変えないので、行の指紋
+    （hand_fingerprint）と board_edit.py の K6〜K8・K17 は変わらない。head の板では、body の中の閉じていない要素などが後ろを飲み込んでも
+    board.js は動き、ふつうは画面の「ボードの点検」の⑦（board.js の TB_CUT）に出る。"""
+    m = _BOARD_JS_TAIL_RE.search(text)
+    if not m or text.count(_BOARD_CSS_LINK) != 1 or _BOARD_JS_HEAD in text:
+        return None
+    hit, ran = _sw_scan(text)
+    if hit is not None or not ran or not board_structure_ok(text.splitlines(keepends=True)):
+        return None
+    nl = "\r\n" if "\r\n" in text else "\n"
+    body = text[:m.start()].rstrip(" \t\r\n") + nl
+    i = body.index(_BOARD_CSS_LINK) + len(_BOARD_CSS_LINK)
+    new = body[:i] + nl + _BOARD_JS_HEAD + body[i:]
+    hit, ran = _sw_scan(new)
+    if hit is not None or not ran:
+        return None
+    return new
 
 
 def parse_due_value(value):
@@ -1339,7 +1948,7 @@ def block_edit(blines, nl, title=None, note=None):
 def block_set_time(blines, nl, value):
     block = "".join(blines)
     if _time_unclosed(block):
-        # 閉じタグの無い欄を書き換えると、欄の中に入ったタイトル・チップまで消える（v1.10）
+        # 閉じタグの無い欄を書き換えると、後ろのタイトルとチップまで消える。ブラウザが欄の中に入れた行でも、手前で閉じる行でも同じ（v1.10）
         raise OpError("この項目の時刻の欄には閉じタグが無いため、時刻を書き換えられません。何も書いていません。"
                       "先に close-time --item <項目> で閉じタグを補ってください（警告 K15）。")
     n_time = len(list(_TIME_OPEN_RE.finditer(block)))
@@ -1388,7 +1997,7 @@ def normalize_block(blines):
     return _normalize_item_block(block, is_done_block(block)).splitlines(keepends=True)
 
 
-# ================================================================ 検査（K1〜K15）
+# ================================================================ 検査（K1〜K17）
 
 def _region_text(text, start_re):
     """start_re に当たる開始タグの div を、対応する閉じまで（コメントは潰した写しで数える）。"""
@@ -1428,7 +2037,7 @@ def strict_date_ok(txt):
 
 
 def structure_errors(text):
-    """K1〜K3（読んだ板にも当てる）。"""
+    """K1〜K3・K16（読んだ板にも当てる。K16 は v1.13）。"""
     lines = text.splitlines(keepends=True)
     errs = []
     if not board_structure_ok(lines):
@@ -1439,6 +2048,17 @@ def structure_errors(text):
     s, e = _marker_counts(text)
     if s != 1 or e != 1 or text.find(MARKER_START) > text.find(MARKER_END):
         errs.append({"code": "K3", "message": "DECK マーカーがちょうど1組（START が END より前）になっていません（START %d / END %d）。" % (s, e)})
+    hit, ran = _sw_scan(text)
+    if hit and hit[1] == "load":
+        errs.append({"code": "K16", "message": "%sがあります。ボードのスクリプト（board.js）の読み込みが実行されないので、"
+                     "ポップアップの通知・「ボードの点検」・「書き込み停止中」の知らせも画面に出ません。" % swallow_text(text, hit)})
+    elif hit and ran:
+        errs.append({"code": "K16", "message": "%sがあります。ブラウザはそこに入る行・見出し・Deck の欄を要素として読まないので、それらが画面から消えます"
+                     "（ボードのスクリプトは動くので、ふつうは画面の「ボードの点検」にも出ます）。" % swallow_text(text, hit)})
+    elif hit:
+        errs.append({"code": "K16", "message": "%sがあります。ブラウザはそこに入る行・見出し・Deck の欄を要素として読まないので、それらが画面から消えます。"
+                     "ボードのスクリプト（board.js）を末尾で読む板では、その読み込みも飲み込まれてボードのスクリプトが動かないことがあり、"
+                     "そのときはポップアップの通知・「ボードの点検」・「書き込み停止中」の知らせも画面に出ません。" % swallow_text(text, hit)})
     return errs
 
 
@@ -1557,13 +2177,42 @@ def warnings_for(text):
                       % ("、".join(due_now),
                          "。ただし %s は、行の形が想定と違う（時刻の欄が2つ以上ある・時刻の欄の中にタイトルやチップが入っている等）ため、Deck の日付の切り替えでは移らずその場に残ります（K15 があれば先にその直し方で直してください）"
                          % "、".join(stuck) if stuck else "")})
-    unclosed = [_item_key("".join(lines[it["s"]:it["e"] + 1])) for it in items
-                if _time_unclosed("".join(lines[it["s"]:it["e"] + 1]))]
+    # 閉じタグの無い時刻の欄を、ブラウザが欄の中に後ろの要素を取り込む行（unclosed）と、ブラウザがその手前で欄を閉じて画面は正しい行
+    # （shown＝_time_screen_closed。board.js の⑥には出ない）に分けて知らせる（v1.12）
+    # 書式の要素を開き直す行（reopened＝_time_reopened。画面は正しくなく、close-time は --confirmed のときだけ補う）も分ける。shown は close-time で --confirmed なしに直せる行だけ
+    # 板に K16（_swallow_open）があれば、その行のある項目は K15 に入れない（ブラウザはそこから後ろを飲み込み、board.js が動かない。K16 で知らせる・v1.13）
+    sw = _swallow_open(text)
+    sw_line = text.count("\n", 0, sw[0]) if sw else -1
+    unclosed, shown, reopened = [], [], []
+    for it in items:
+        if it["s"] <= sw_line <= it["e"]:
+            continue
+        b = "".join(lines[it["s"]:it["e"] + 1])
+        hit = _time_open_unclosed(b)
+        if hit is None:
+            continue
+        if _time_screen_closed(b, hit) is not None:
+            shown.append(_item_key(b))
+        elif _time_reopened(b, hit):
+            reopened.append(_item_key(b))
+        else:
+            unclosed.append(_item_key(b))
     if unclosed:
         warns.append({"code": "K15", "message": "時刻の欄の閉じタグが無い項目があります（%s）。ブラウザでは時刻の欄の中にタイトルやチップなど class を持つ要素が入り、"
                       "✎ で時刻を変えられません。欄の中にタイトルやチップが入っている行は、「明日以降」へ動かすときに実施日も決められません。"
                       "ユーザーに「ボードを直して」と頼まれたら、"
                       "close-time --item <項目> で閉じタグを補ってください（タスクの文言・状態は変わりません）。" % "、".join(unclosed)})
+    if shown:
+        warns.append({"code": "K15", "message": "時刻の欄の閉じタグが無い項目があります（%s）。ブラウザは時刻の欄をタイトルやチップの手前で閉じるので、"
+                      "画面では正しく表示されます（「ボードの点検」の⑥には出ません）。ただし HTML に閉じタグが無いため、set-time では時刻を書き換えられません"
+                      "（書き換えると、後ろのタイトルやチップまで消えるため）。時刻を書き換える前か、ユーザーに「ボードを直して」と頼まれたら、"
+                      "close-time --item <項目> で閉じタグを補ってください（画面・タスクの文言・状態は変わりません）。" % "、".join(shown)})
+    if reopened:
+        warns.append({"code": "K15", "message": "時刻の欄の閉じタグが無い項目があります（%s）。時刻の欄の中に閉じていない書式の要素（b・i など）があり、"
+                      "ブラウザは時刻の欄を閉じた後でその要素を開き直すので、画面では後ろのタイトルやチップがその書式で表示されます（「ボードの点検」の⑥には出ません）。"
+                      "set-time では時刻を書き換えられません。ユーザーに「ボードを直して」と頼まれたら、板のその行をユーザーに見せ、"
+                      "タイトルやチップの書式が外れてよいかを確かめてから、close-time --item <項目> --confirmed で閉じタグを補ってください"
+                      "（画面の書式は外れますが、タスクの文言・状態・行の鍵は変わりません）。" % "、".join(reopened)})
     mism = later_time_mismatches(lines, items)
     if mism:
         warns.append({"code": "K14", "message": "「明日以降」に、時刻の欄が実施日の時刻と違う行があります（%s）。"
@@ -1599,7 +2248,7 @@ def later_time_mismatches(lines, items):
 
 
 def run_checks(op, old_text, new_text, intended_date_text, touched_old=(), touched_new=(), delta=0):
-    """出来上がりの本文に K1〜K9 を当てる。当たったもの（E）の一覧を返す。"""
+    """出来上がりの本文に K1〜K9・K16・K17 を当てる。当たったもの（E）の一覧を返す。"""
     errs = structure_errors(new_text)
     lines = new_text.splitlines(keepends=True)
     # K4
@@ -1638,6 +2287,12 @@ def run_checks(op, old_text, new_text, intended_date_text, touched_old=(), touch
             or not any("bar-fill" in ln and BAR_WIDTH_RE.search(ln) for ln in lines) \
             or count_progress(lines) != lines:
         errs.append({"code": "K9", "message": "進捗 N / M かバー幅が、数え直した値と合いません。"})
+    # K17（v1.13）: 書く前の板で実行される board.js の読み込みが、出来上がりでは無いか実行されない（K16 に当たる出来上がりは K16 で断る）
+    if old_text is not None and _sw_scan(old_text)[1]:
+        hit, ran = _sw_scan(new_text)
+        if hit is None and not ran:
+            errs.append({"code": "K17", "message": "書く前の板にあったボードのスクリプト（board.js）の読み込み（<script src=\"board.js\"></script>）が、"
+                         "出来上がりの板では無いか、実行されない形になっています。"})
     return errs
 
 
@@ -2764,13 +3419,26 @@ def commit(board_path, op, compute):
     board_dir = os.path.dirname(os.path.abspath(board_path))
     for attempt in range(REREAD_ATTEMPTS):
         old_raw = read_raw(board_path)
-        res, bom = compute(old_raw)
-        if res.text is None:
-            return res, False
-        old_text = None
+        # 末尾の形の板は、操作の前に head の形へ移し、移した板に操作を当てる（v1.14・migrate_board_js）。操作の前に移すので、
+        # 操作の対象の行の位置と K6〜K8 の比べ方は移した板の上でそろう。置き換える直前の読み直しは、読んだままの old_raw と比べる
+        in_raw = old_raw
         if old_raw is not None:
             try:
-                old_text = decode_board(old_raw)[0]
+                t0, b0 = decode_board(old_raw)[:2]
+                moved = migrate_board_js(t0)
+                if moved is not None:
+                    in_raw = encode_board(moved, b0)
+            except OpError:
+                pass
+        res, bom = compute(in_raw)
+        if res.text is None:
+            return res, False
+        if in_raw is not old_raw:
+            res.payload["migrated"] = True   # 末尾の形の板を head の形へ移した（v1.14）。操作の中身が何も変わらなくても changed は真になる
+        old_text = None
+        if in_raw is not None:
+            try:
+                old_text = decode_board(in_raw)[0]
             except OpError:
                 old_text = None
         new_text = finish_header(res.text)
@@ -3152,7 +3820,8 @@ def op_deck_wait(board_path, a, sleep=time.sleep, clock=time.monotonic):
 # ================================================================ コマンドライン
 
 HELP = """きょうのボード（board.html）を書き換える専用のスクリプトです。Claude は board.html を直接書かず、これを使います。
-出力は標準出力に JSON 1つ（ok・changed・progress・warnings・board ほか）。拒否・失敗のときは終了コードが 0 以外になり、
+出力は標準出力に JSON 1つ（ok・changed・progress・warnings・board ほか。末尾で board.js を読む形の板を head の形へ移した書き込みでは
+migrated: true が付き、操作の中身が何も変わらなくても changed は真になる＝v1.14）。拒否・失敗のときは終了コードが 0 以外になり、
 理由を標準エラーにも出します（そのときボードは書いていません）。項目の指定（--item 等）は、
 「時刻|タイトル」（時刻の無い項目は「|タイトル」）・タイトルの完全一致・status が返す番号（index）のどれかです。
 日本語を含む引数がシェルで崩れるときは、引数を JSON ファイルに書いて --ops <ファイル> で渡してください。"""
@@ -3245,10 +3914,16 @@ def build_parser():
     sp.add_argument("--due", help="今日の予定・今日中の行を「明日以降」へ動かすときの実施日（YYYY-MM-DD か \"YYYY-MM-DD H:MM\"。明日以後）か none（未定）。"
                                   "ユーザーに確かめた値を渡す。印と元の実施日は外れ、時刻の欄はこの時刻になる（時刻が無ければ外す。none では変えない）・v1.9")
     sp = add("close-time", "閉じタグの無い時刻の欄（警告 K15）に閉じタグを補う（v1.10）。欄の時刻の文字の直後に、欄と同じ名前の"
-                           "閉じタグを1つ足すだけで、タスクの文言・状態・位置と行の鍵は変えない。欄が div のとき・閉じタグを足すと数が合わなくなる"
+                           "閉じタグを足すだけで、タスクの文言・状態・位置と行の鍵は変えない。欄が div のとき・閉じタグを足すと数が合わなくなる"
                            "とき・欄の始まりの直後に時刻の文字が無いとき・時刻の文字の後ろにタグで囲んだ文字があるときは書かずに断る"
-                           "（断った後の扱いは SKILL.md の「ボードの点検」の⑥）")
+                           "（断った後の扱いは SKILL.md の「ボードの点検」の⑥）。ブラウザが欄をタイトルやチップの手前で閉じる形（画面は正しい形）"
+                           "では、ブラウザが閉じる位置（その手前の空白を除く）に足し、この断り方はしない（欄の中で閉じていない要素があれば、その閉じタグも足す。v1.12）。"
+                           "ただし、書式の要素〔b・i・a など〕が欄の中で閉じていない行は --confirmed のときだけ補い（タイトルやチップを包んでいた書式が外れ、"
+                           "画面が変わる。ユーザーに確かめてから付ける）、欄そのものが書式の要素の行と、欄の中で table・object・script などが閉じていない行は"
+                           "上の判定に戻る")
     sp.add_argument("--item")
+    sp.add_argument("--confirmed", action="store_true",
+                    help="時刻の欄の中に閉じていない書式の要素がある行で、タイトルやチップの書式が外れることをユーザーが確かめた後に付ける（v1.12）")
     sp = add("remove", "項目を1行消す。--confirmed が無ければ対象を示すだけで消さない")
     sp.add_argument("--item")
     sp.add_argument("--confirmed", action="store_true")
