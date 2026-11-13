@@ -1218,7 +1218,7 @@ class TestLaterTimeNotice(Base):
     def test_help(self):
         import io
         import contextlib
-        self.assertEqual(be.VERSION, "1.14")
+        self.assertEqual(be.VERSION, "1.15")
         outs = {}
         for op in ("move", "set-time", "set-due"):
             buf = io.StringIO()
@@ -1259,7 +1259,7 @@ class TestLaterTimeNotice(Base):
             self.assertNotIn(s, skill)
         readme = flat("deck", "README.md")
         self.assertIn("「明日以降」の行も✎は操作できず", readme)
-        self.assertIn("#Deckv2.18—全セッション自動収集ウォッチャー", readme)
+        self.assertIn("#Deckv2.19—全セッション自動収集ウォッチャー", readme)
         self.assertNotIn("実施日の前の行は`data-due`の日付も印も変えない", readme)
         self.assertNotIn("実施日の前に動かした行には付けない", readme)
         self.assertNotIn("実施日の前の行には付けない〕", readme)

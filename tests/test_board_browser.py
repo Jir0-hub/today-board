@@ -3485,6 +3485,39 @@ class TestBrokenTimeKeys(BrowserCase):
                     self.assertIsNone(dw._time_screen_closed(row, dw._time_open_unclosed(row)))
                     self.assertNotIn(closed, dom, tag)
 
+    def test_time_field_foreign_matches_browser(self):
+        """時刻の欄の中の svg・math の形（tests/test_board_edit.py の TIME_FOREIGN_CASES）を、ブラウザが同じく読む（v2.19 / board_edit.py v1.15）。
+        "close" はタイトルが欄の外で書式に包まれず、close-time（_time_close_at）が補った行と DOM が同じ。"reopen" はタイトルが書式に包まれる。
+        "keep" はタイトルが欄の中に入る。1形を1ページで見る（補った行を先に置く。board.js は使わず、読み込み後の DOM を読む）。"""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import test_board_edit as tbe
+        fmt = " %s " % " ".join(sorted(dw._FORMATTING_TAGS))
+        # 書式の要素は HTML の要素だけを見る（svg の font・a は svg の要素で、書式の要素ではない）
+        js = ("<script>var X='http://www.w3.org/1999/xhtml',L='%s';function F(e){return e.namespaceURI===X&&L.indexOf(' '+e.localName+' ')>=0;}"
+              "function W(t){for(var a=t;a;a=a.parentElement)if(F(a))return true;var d=t.getElementsByTagName('*');"
+              "for(var i=0;i<d.length;i++)if(F(d[i]))return true;return false;}"
+              "document.addEventListener('DOMContentLoaded',function(){var o={};"
+              "Array.prototype.forEach.call(document.querySelectorAll('.item'),function(it){var t=it.querySelector('.task-title');"
+              "var tm=it.querySelector('.time');if(!t)return;o[t.textContent]={inside:!!(tm&&tm.contains(t)),"
+              "fmt:W(t),html:it.outerHTML.split(t.textContent).join('T').replace(/\\s+/g,'')};});"
+              "document.documentElement.setAttribute('data-o',JSON.stringify(o));});</script>" % fmt)
+        page = os.path.join(os.path.dirname(self.board), "foreign.html")
+        for i, (inner, want) in enumerate(tbe.TIME_FOREIGN_CASES):
+            with self.subTest(inner=inner):
+                before = tbe.time_foreign_row(inner, "前")
+                rows = [before]
+                if want == "close":
+                    at = dw._time_close_at(tbe.time_foreign_row(inner, "後"))
+                    after = tbe.time_foreign_row(inner, "後")
+                    rows.insert(0, after[:at[0]] + at[1] + after[at[0]:])
+                with open(page, "w", encoding="utf-8") as f:
+                    f.write('<html><head><meta charset="utf-8">%s</head><body>\n%s\n</body></html>' % (js, "\n".join(rows)))
+                o = json.loads(self.attr(self.open_page(page, budget=1000), "data-o"))
+                self.assertEqual(o["前"]["inside"], want == "keep")
+                self.assertEqual(o["前"]["fmt"], want == "reopen")
+                if want == "close":
+                    self.assertEqual(o["後"]["html"], o["前"]["html"])
+
     def test_check_counts_items(self):
         """⑥は項目ごとに数える（時刻の欄が2つとも閉じていない行も1件。board_edit.py の K15 と同じ）。"""
         self.start_deck()

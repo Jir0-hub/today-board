@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""board_edit.py v1.14 — きょうのボード（board.html）を書き換える専用のスクリプト。
+"""board_edit.py v1.15 — きょうのボード（board.html）を書き換える専用のスクリプト。
 
 Claude は board.html を直接書かず、このスクリプトに操作を渡す。スクリプトが HTML を機械で書き換え、
 書く前に出来上がりの形を検査し（K1〜K9・K16・K17 に当たれば書かない・K11〜K15 は書いて警告する）、
@@ -60,6 +60,10 @@ create は置き換える前の板を history/board-<日付>-before-create-<時�
       テンプレート（create）は head の形で作る。移すのは操作の前で、移した板に操作を当てる。移した書き込みの出力には migrated: true が付き、操作の
       中身が何も変わらなくても changed は真になる。create・restore が history/ に残す「置き換える前の板」も、移した後の版になる（行・見出し・DECK 領域・
       ヘッダは同じ）。移しても行の指紋・K6〜K8・K17 は変わらない
+      v1.15: 時刻の欄の中の svg・math を、ブラウザと同じく名前空間で読む（_tag_walk。K16 の _sw_scan と同じ決まり＝math・svg の中から抜ける HTML の
+      タグ・</p>・</br>、HTML として読む所、スコープの境界の中では外側の閉じタグを読み飛ばす）。K15 の文の選び方・close-time・set-time の断り方に効く。
+      v1.14 までは名前だけで見て、<svg><span><desc>x や <svg><textarea>x を「ブラウザが欄を閉じない」と数え、<svg><foreignObject><span>x</svg> の
+      </svg> で欄を閉じたとみなした（どれも手書きでしか生まれない形）。Deck v2.19 と同じ写し
 使い方は `board_edit.py --help` と `board_edit.py <操作> --help`。
 
 - Python 3 標準ライブラリのみ・単一ファイル（Deck と同じ制約）
@@ -83,7 +87,7 @@ import urllib.parse
 from collections import Counter
 from datetime import date, datetime
 
-VERSION = "1.14"
+VERSION = "1.15"
 
 # ================================================================ Deck の写し（定数）
 
@@ -437,33 +441,34 @@ _FORMATTING_TAGS = frozenset(("a", "b", "big", "code", "em", "font", "i", "nobr"
 # 名前は _time_inner_open と同じく小文字（foreignObject も foreignobject）。3種類ある:
 #   ・スコープの境界になる要素: table・object・marquee・template・applet（ブラウザは中で外側の閉じタグを読み飛ばす。select も読み飛ばす）
 #   ・MathML・SVG の中に HTML を入れる所: mi・mo・mn・ms・mtext・annotation-xml（MathML）・foreignobject・desc（SVG）
-#     （_time_keeps_open が、それより外側に math〔MathML〕・svg〔SVG〕が開いているときだけ数える。<math>・<svg> の外にそのまま書いたものは
-#     ふつうの要素で、ブラウザは外側の閉じタグで欄を閉じる。Chrome で確かめた＝2026-11-10・Reviewer・n=1）
+#     （_time_keeps_open が、math・svg の要素として読まれたものだけを数える＝_tag_walk・v2.19 / board_edit.py v1.15。<math>・<svg> の外にそのまま
+#     書いたもの・svg・math の中から抜ける HTML のタグの後ろに書いたもの〔<svg><span><desc>〕は HTML の要素で、ブラウザは外側の閉じタグで欄を閉じる。
+#     Chrome で確かめた＝2026-11-10・Reviewer・n=1、抜ける形は Chrome と Edge で 2026-11-13・各 n=1）
 #   ・閉じタグまでを文字として読む要素: textarea・script・style・xmp・iframe・noembed・noframes・noscript・plaintext・title
-#     （名前だけで見る。title は svg の外でも閉じタグまでを文字として読み、<svg><title> も欄を閉じない）
+#     （HTML の要素として読まれたものだけを数える＝_KEEP_OPEN_HTML・v2.19 / board_edit.py v1.15。<svg><title> は SVG の境界として数え、欄を閉じない）
 # Chrome で確かめた（1種を1行1ページ・n=1）＝table・select・textarea（2026-11-10・Reviewer）、object・marquee・template・applet・<math><mi>・
 # <svg><foreignObject>・script・style・xmp・iframe・noembed・noframes・noscript・plaintext・title（同日・Reviewer）、
 # <math><mo>・<math><mn>・<math><ms>・<math><mtext>・<math><annotation-xml>・<svg><desc>・<svg><title>（同日・Reviewer）
 _KEEP_OPEN_TAGS = frozenset(("table", "select", "object", "marquee", "template", "applet",
                              "mi", "mo", "mn", "ms", "mtext", "annotation-xml", "foreignobject", "desc",
                              "textarea", "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext", "title"))
-# 上のうち、外側に math（_MATH_POINTS）・svg（_SVG_POINTS）が開いているときだけ数える要素
+# MathML・SVG の要素のうち、HTML の構文解析でスコープの境界になるもの（中では外側の閉じタグを読み飛ばす＝_time_keeps_open・_tag_walk）。
+# SVG の title は v2.19 / board_edit.py v1.15 で足した（v2.18 までは _KEEP_OPEN_TAGS の title を名前だけで見て、<svg><title> も数えていた）
 _MATH_POINTS = frozenset(("mi", "mo", "mn", "ms", "mtext", "annotation-xml"))
-_SVG_POINTS = frozenset(("foreignobject", "desc"))
+_SVG_POINTS = frozenset(("foreignobject", "desc", "title"))
+# 上のうち HTML の要素として数えるもの（_KEEP_OPEN_TAGS から MathML・SVG の要素を除き、HTML の title〔閉じタグまでを文字として読む〕を残す）
+_KEEP_OPEN_HTML = (_KEEP_OPEN_TAGS - _MATH_POINTS - _SVG_POINTS) | frozenset(("title",))
 
 
 def _time_keeps_open(inner):
-    """_time_inner_open の結果（外側から順の名前）に、ブラウザが外側の閉じタグで時刻の欄を閉じなくなる要素（_KEEP_OPEN_TAGS）があるか
-    （v2.16 / board_edit.py v1.12）。MathML の mi など（_MATH_POINTS）は、それより外側に math があるときだけ、SVG の foreignobject・desc
-    （_SVG_POINTS）は svg があるときだけ数える（<math>・<svg> の外にそのまま書いたものは、ブラウザが外側の閉じタグで欄を閉じる）。"""
-    for i, name in enumerate(inner):
-        if name in _MATH_POINTS:
-            if "math" in inner[:i]:
-                return True
-        elif name in _SVG_POINTS:
-            if "svg" in inner[:i]:
-                return True
-        elif name in _KEEP_OPEN_TAGS:
+    """_time_inner_stack の結果（外側から順の (名前, 名前空間, HTML として読む所か, 境界か)）に、ブラウザが外側の閉じタグで時刻の欄を
+    閉じなくなる要素があるか（v2.16 / board_edit.py v1.12。名前空間で見るのは v2.19 / board_edit.py v1.15）。HTML の要素は _KEEP_OPEN_HTML
+    （table・object・script・title など）。MathML・SVG の要素は、HTML の構文解析でスコープの境界になるもの（MathML の mi・mo・mn・ms・mtext・
+    annotation-xml、SVG の foreignObject・desc・title＝_MATH_POINTS・_SVG_POINTS。4つ目が真）。math・svg の中から抜ける HTML のタグ
+    （_FOREIGN_BREAKOUT・</p>・</br>）の後ろの mi・desc などは HTML の要素なので数えず（<svg><span><desc>x）、svg・math の中の textarea・style
+    なども svg・math の要素なので数えない（<svg><textarea>x。v2.18 / board_edit.py v1.14 までは名前だけで見て、どちらも数えた）。"""
+    for name, ns, _point, boundary in inner:
+        if (name in _KEEP_OPEN_HTML) if ns == "html" else boundary:
             return True
     return False
 
@@ -479,17 +484,17 @@ def _time_screen_closed(block, hit):
     欄そのものが書式の要素（<b class="time">…＝_FORMATTING_TAGS）の行と、欄の中に閉じていない書式の要素がある行（<span class="time">9:00 <b>am</div>…）は
     None（画面が正しくないため。ブラウザは欄を閉じた後で書式の要素を開き直し、後ろのタイトルやチップをその要素で包む。前者は class="time" ごと
     開き直すので、欄が増えてタイトルも欄の中に入る＝⑥にも出る。後者は _time_reopened。Chrome で確かめた＝2026-11-10・Reviewer・書式の要素14種・
-    1種を1行1ページ・n=1）。欄の中で table・object・script など（_KEEP_OPEN_TAGS）が閉じていない行も None（ブラウザは外側の閉じタグで欄を
-    閉じないので、タイトルやチップも欄の中に入るか、文字として読まれる。MathML・SVG の要素は math・svg の中にあるときだけ＝_time_keeps_open。
-    試した要素は _KEEP_OPEN_TAGS の注釈）。"""
+    1種を1行1ページ・n=1）。欄の中で table・object・script など（_KEEP_OPEN_HTML）か、MathML・SVG のスコープの境界の要素（math の mi・svg の
+    foreignObject など）が閉じていない行も None（ブラウザは外側の閉じタグで欄を閉じないので、タイトルやチップも欄の中に入るか、文字として読まれる＝
+    _time_keeps_open。試した要素は _KEEP_OPEN_TAGS の注釈）。svg・math の中は名前空間で読む（_time_inner_stack・v2.19 / board_edit.py v1.15）。"""
     m, stop = hit
     if m.group(1).lower() in _FORMATTING_TAGS:
         return None
     r = _time_range(block, m)
     if r is None or r[1] > stop:
         return None
-    inner = _time_inner_open(block, m.end(), r[1])
-    if _time_keeps_open(inner) or any(name in _FORMATTING_TAGS for name in inner):
+    inner = _time_inner_stack(block, m.end(), r[1])
+    if _time_keeps_open(inner) or any(ns == "html" and name in _FORMATTING_TAGS for name, ns, _p, _b in inner):
         return None
     return r[1]
 
@@ -501,36 +506,135 @@ def _time_reopened(block, hit):
     閉じる位置に、中で閉じていない要素の閉じタグ（書式の要素を含む）と欄の閉じタグを足すと、書式の要素は開き直されなくなり、タイトルや
     チップを包んでいた書式が外れる（行の鍵は変わらない。Chrome で確かめた＝2026-11-10・Reviewer・18通り・n=1）。画面が変わるので、
     _time_close_at は reopen が真のとき（board_edit.py の close-time --confirmed）だけ補い、それ以外は "format" を返す。欄そのものが書式の
-    要素の行と、欄の中に table・object・script などがある行（_KEEP_OPEN_TAGS）は含めない（_time_screen_closed の注釈）。"""
+    要素の行と、欄の中に table・object・script など・MathML・SVG のスコープの境界の要素がある行（_time_keeps_open）は含めない（_time_screen_closed の注釈）。
+    書式の要素は HTML の要素だけを数える（svg の中の <a> は svg の要素。math・svg の中から抜けた <b> は HTML の要素＝<math><b><mi>x も
+    この形。Chrome と Edge で確かめた＝2026-11-13・各 n=1。v2.19 / board_edit.py v1.15）。"""
     m, stop = hit
     if m.group(1).lower() in _FORMATTING_TAGS:
         return False
     r = _time_range(block, m)
     if r is None or r[1] > stop:
         return False
-    inner = _time_inner_open(block, m.end(), r[1])
+    inner = _time_inner_stack(block, m.end(), r[1])
     if _time_keeps_open(inner):
         return False
-    return any(name in _FORMATTING_TAGS for name in inner)
+    return any(ns == "html" and name in _FORMATTING_TAGS for name, ns, _p, _b in inner)
 
 
 def _time_inner_open(block, start, end):
     """start から end までに開いて、end でまだ閉じていない要素の名前（外側から順。v2.16 / board_edit.py v1.12。_time_close_at が足す閉じタグ）。
-    void 要素と /> は数えず、開いていない要素の閉じタグは読み飛ばす。p を閉じる開きタグ（_P_CLOSERS）が来たら、開いている p をそこで閉じたことに
-    する（ブラウザと同じ。<span class="time">9:00 <p>a<p>b</div> の2つ目の <p> は1つ目を閉じる）。"""
-    inner = []
-    for t in _TAG_TOKEN_RE.finditer(block, start, end):
+    数え方は _time_inner_stack（名前だけを返す）。"""
+    return [x[0] for x in _time_inner_stack(block, start, end)]
+
+
+def _time_inner_stack(block, start, end):
+    """start から end までに開いて、end でまだ閉じていない要素（外側から順の (名前, 名前空間, HTML として読む所か, 境界か)。v2.19 / board_edit.py v1.15。
+    v2.16〜v2.18 / board_edit.py v1.12〜v1.14 の _time_inner_open が名前だけで数えていたもの）。読み方は _tag_walk（p を閉じる開きタグの扱いを付ける）。
+    void 要素と /> の HTML の要素は数えず、開いていない要素の閉じタグは読み飛ばす。p を閉じる開きタグ（_P_CLOSERS）が来たら、開いている p を
+    そこで閉じたことにする（ブラウザと同じ。<span class="time">9:00 <p>a<p>b</div> の2つ目の <p> は1つ目を閉じる）。"""
+    return _tag_walk(block, start, end, p_closers=True)[0]
+
+
+def _tag_walk(block, start, end=None, outer=None, p_closers=False):
+    """block の start から end（None なら終わり）までのタグを、ブラウザの HTML の構文解析と同じ順で読み、開いている要素の並びを返す
+    （v2.19 / board_edit.py v1.15。時刻の欄の読み方＝_time_inner_stack・_implied_close）。(並び, 位置) を返す。並びは外側から順の
+    (名前〔小文字〕, 名前空間〔"html"・"svg"・"math"〕, HTML として読む所〔integration point〕か, スコープの境界か)。位置は、outer（start より
+    外側で開いている HTML の要素の名前＝_open_stack）のどれかを閉じる閉じタグの位置で、そこで読むのをやめる。無ければ None。
+
+    svg・math の中（foreign content）は _sw_scan（K16）と同じ決まりで読む: svg・math の中で _FOREIGN_BREAKOUT の開きタグ（font は color・face・
+    size の属性があるときだけ）か </p>・</br> が来たら、svg・math を閉じて HTML として読む。HTML として読む所（svg の foreignObject・desc・title、
+    math の mi・mo・mn・ms・mtext、encoding が text/html か application/xhtml+xml の annotation-xml）の中の開きタグは HTML の要素。閉じタグは、
+    上から svg・math の要素を同じ名前まで探して閉じ、HTML の要素に当たったら HTML の決まりで探す——そのときスコープの境界（_MATH_POINTS・
+    _SVG_POINTS の要素）を越えない（<svg><foreignObject><span>x</svg> の </svg> と、その後の外側の閉じタグは読み飛ばす）。
+    HTML の要素は従来どおり（void 要素と /> は開いたものに数えず、開いていない要素の閉じタグは読み飛ばす）。なぞらない所: 閉じタグまでを文字として
+    読む要素の中身・コメント（_TAG_TOKEN_RE はタグの形だけを見る。閉じていない textarea・script などは K16 が知らせる）、表の foster parenting・
+    書式の要素の付け直しなど木を組み立てる段階の細部。
+    並びは、名前空間の同じ要素が続く区間（parts）ごとに名前の数を持ち、閉じタグの名前が区間に無ければ辿らない（_sw_scan の segs と同じ。
+    境界の中で HTML の要素が深く入れ子になった形で、閉じタグごとに並びを辿り直して遅くならないため）。HTML の要素の区間のすぐ下は、必ず
+    HTML として読む所（境界）の要素になる（HTML の要素は、HTML の要素か HTML として読む所の中にしか積まれない）。"""
+    stack = []
+    parts = []          # [HTML の区間か, 名前ごとの数, 要素の数, 境界の数]（parts[-1] が stack の一番上の区間）
+
+    def push(item):
+        html = item[1] == "html"
+        if not parts or parts[-1][0] != html:
+            parts.append([html, {}, 0, 0])
+        p = parts[-1]
+        p[1][item[0]] = p[1].get(item[0], 0) + 1
+        p[2] += 1
+        p[3] += item[3]
+        stack.append(item)
+
+    def pop_to(k):
+        while len(stack) > k:
+            item = stack.pop()
+            p = parts[-1]
+            p[1][item[0]] -= 1
+            p[2] -= 1
+            p[3] -= item[3]
+            if not p[2]:
+                parts.pop()
+
+    def pop_foreign_run():
+        # 一番上の svg・math の要素を、HTML の要素か HTML として読む所まで閉じる（抜ける開きタグ・</p>・</br>）
+        k = len(stack)
+        while k and stack[k - 1][1] != "html" and not stack[k - 1][2]:
+            k -= 1
+        pop_to(k)
+
+    def find_in_part(name, html):
+        # 一番上の区間の中で、上から最初の name の位置
+        k = len(stack) - 1
+        while stack[k][0] != name or (stack[k][1] == "html") != html:
+            k -= 1
+        return k
+
+    for t in _TAG_TOKEN_RE.finditer(block, start, len(block) if end is None else end):
         name = t.group(2).lower()
-        if not t.group(1):
-            if name in _P_CLOSERS and "p" in inner:
-                while inner.pop() != "p":
-                    pass
-            if not t.group(3) and name not in _VOID_TAGS:
-                inner.append(name)
-        elif name in inner:
-            while inner.pop() != name:
-                pass
-    return inner
+        top = stack[-1] if stack else None
+        if t.group(1):
+            if name in ("p", "br") and top is not None and top[1] != "html":
+                pop_foreign_run()
+                if name == "br":
+                    continue                    # </br> は <br>（void）として読む
+            if parts and not parts[-1][0]:
+                if parts[-1][1].get(name):
+                    pop_to(find_in_part(name, False))   # svg・math の要素を閉じる
+                    continue
+                if parts[-1][3]:
+                    continue                    # HTML の決まりで探すと、境界を越えられない（読み飛ばす）
+                hp, below = (parts[-2], len(parts) > 2) if len(parts) > 1 else (None, False)
+            else:
+                hp, below = (parts[-1], len(parts) > 1) if parts else (None, False)
+            if hp is not None and hp[1].get(name):
+                pop_to(find_in_part(name, True))
+                continue
+            if below:
+                continue                        # HTML の要素の区間のすぐ下は境界（読み飛ばす）
+            if outer is not None and name in outer:
+                return stack, t.start()
+            continue
+        foreign = top is not None and top[1] != "html" and not top[2]
+        if foreign and (name in _FOREIGN_BREAKOUT or (name == "font" and re.search(r"[\s/](?:color|face|size)(?=[\s/=>])", t.group(0), re.I))):
+            pop_foreign_run()
+            top = stack[-1] if stack else None
+            foreign = False
+        if top is not None and top[1] == "math" and top[2] and top[0] != "annotation-xml" and name in ("mglyph", "malignmark"):
+            foreign = True                      # math の mi などの中の mglyph・malignmark は math の要素
+        if foreign or name in ("svg", "math"):
+            if not t.group(3):
+                ns = name if name in ("svg", "math") else top[1]
+                point = ((ns == "svg" and name in _SVG_POINTS) or (ns == "math" and name in _MATH_POINTS and name != "annotation-xml")
+                         or (ns == "math" and name == "annotation-xml"
+                             and re.search(r"""\sencoding\s*=\s*["']?(?:text/html|application/xhtml\+xml)["'\s/>]""", t.group(0), re.I)))
+                boundary = name in (_SVG_POINTS if ns == "svg" else _MATH_POINTS)
+                push((name, ns, bool(point), boundary))
+            continue
+        if p_closers and name in _P_CLOSERS and parts and parts[-1][0] and parts[-1][1].get("p"):
+            pop_to(find_in_part("p", True))
+        if not t.group(3) and name not in _VOID_TAGS:
+            push((name, "html", False, False))
+    return stack, None
 
 
 def _time_close_at(block, reopen=False):
@@ -665,26 +769,15 @@ def _implied_close(block, pos, outer=()):
     """閉じタグの無い要素の終わり（v2.14 / board_edit.py v1.10 で新設。outer と、開いていない閉じタグの読み飛ばしは v2.15 / board_edit.py v1.11）。pos（要素の開きタグの直後）から読み、外側で開いている要素（outer＝
     _open_stack）の閉じタグの位置を返す。無ければ None。ブラウザはそこで閉じタグの無い要素を閉じる。中で開いた要素の閉じタグは読み飛ばし、
     void 要素と /> は開いたものに数えない。中でも外側でも開いていない要素の閉じタグ（<span class="time">9:00</b>… の </b>）は、ブラウザと
-    同じく読み飛ばす（v2.15 / board_edit.py v1.11。v2.14 はそこで閉じた）。ブラウザの構文解析のすべてをなぞるものではない——なぞるのは
-    この2つと、_time_range の p の扱いだけで、表・書式要素の付け替えなど手書きでしか生まれない形は、画面と違う所で閉じることがある
-    （例: 外側の閉じタグの後に欄と同じ名前の閉じタグがある <span class="time">9:00</div>tail</span></div> は、_time_range が同じ名前の
-    閉じタグまでを欄とみなすので、画面より広くなる）。
+    同じく読み飛ばす（v2.15 / board_edit.py v1.11。v2.14 はそこで閉じた）。svg・math の中は名前空間で読み、スコープの境界（math の mi・svg の
+    foreignObject など）の中では外側の閉じタグを読み飛ばす（_tag_walk・v2.19 / board_edit.py v1.15。v2.18 / board_edit.py v1.14 までは
+    <svg><foreignObject><span>x</svg></div> の </svg> で svg を閉じ、</div> で欄を閉じた。ブラウザはどちらも読み飛ばす）。
+    ブラウザの構文解析のすべてをなぞるものではない——なぞるのはこれらと、_time_range の p の扱いだけで、表・書式要素の付け替えなど
+    手書きでしか生まれない形は、画面と違う所で閉じることがある（例: 外側の閉じタグの後に欄と同じ名前の閉じタグがある
+    <span class="time">9:00</div>tail</span></div> は、_time_range が同じ名前の閉じタグまでを欄とみなすので、画面より広くなる）。
     _remove_time_elements・_key_text が、閉じタグの無い時刻の欄を画面と同じ所までの欄として扱うために使う（board.js は DOM しか見られない
     ので、画面の側に合わせる）。"""
-    stack = []
-    for t in _TAG_TOKEN_RE.finditer(block, pos):
-        name = t.group(2).lower()
-        if not t.group(1):
-            if not t.group(3) and name not in _VOID_TAGS:
-                stack.append(name)
-            continue
-        if name in stack:
-            while stack.pop() != name:
-                pass
-            continue
-        if name in outer:
-            return t.start()
-    return None
+    return _tag_walk(block, pos, None, outer=outer)[1]
 
 
 def _time_range(block, m):

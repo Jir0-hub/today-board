@@ -773,6 +773,40 @@ class TestImportantTasks(Sandbox):
         self.assertRegex(rolled, r'class="item[^"]*crit')
 
 
+# 時刻の欄の中の svg・math の形と、ブラウザの読み方（v2.19 / board_edit.py v1.15。Chrome・Edge で確かめる＝tests/test_board_browser.py の
+# test_time_field_foreign_matches_browser）。"close"＝ブラウザが外側の閉じタグで欄を閉じ、タイトルは欄の外（_time_screen_closed）、
+# "reopen"＝閉じた後で書式の要素を開き直す（_time_reopened）、"keep"＝欄を閉じず、タイトルが欄の中に入る（_time_keeps_open）
+TIME_FOREIGN_CASES = [
+    ("<svg><span><desc>", "close"),          # span が svg を閉じ、desc は HTML の要素
+    ("<math><span><mi>", "close"),
+    ("<svg><p><desc>", "close"),
+    ("<svg></p><desc>", "close"),            # </p> も svg を閉じる
+    ("<math><b><mi>", "reopen"),             # b が math を閉じ、HTML の b が開き直される
+    ('<svg><font color="red"><desc>', "reopen"),   # 属性のある font は svg を閉じる（HTML の font は書式の要素）
+    ("<svg><font><desc>", "keep"),           # 属性の無い font は svg の要素のまま。desc は svg の境界
+    ("<svg><textarea>", "close"),            # svg の中の textarea・style は svg の要素
+    ("<svg><style>", "close"),
+    ("<svg><foreignObject><span>x</svg>", "keep"),   # 境界の中の HTML から書いた </svg> は読み飛ばす
+    ("<math><mi><span>x</math>", "keep"),
+    ("<svg><foreignObject>x</svg>", "close"),        # 境界の直下の </svg> は svg を閉じる
+    ("<svg>", "close"),                      # svg・math そのものが閉じていない形
+    ("<svg><circle>", "close"),
+    ("<svg><g>", "close"),
+    ("<math>", "close"),
+    ("<svg><desc>", "keep"),
+    ("<svg><title>", "keep"),
+    ("<math><annotation-xml>", "keep"),
+    ('<math><annotation-xml encoding="text/html">', "keep"),
+    ("<svg><foreignObject>y</foreignObject>", "close"),
+    ("<svg><desc>y</desc></svg>", "close"),
+]
+
+
+def time_foreign_row(inner, title="T"):
+    return ('<div class="item"><div><span class="time">9:00 %sx</div><p class="task-title">%s</p>'
+            '<div class="chips"><span class="chip pending">未</span></div></div>' % (inner, title))
+
+
 # ------------------------------------------------------------------ T-P（Deck との写しの一致）
 
 COPIED = ["_blank_comments", "_canon_section", "_scan_board", "_element_text", "_key_text", "_item_key", "_recalc_progress",
@@ -781,13 +815,13 @@ COPIED = ["_blank_comments", "_canon_section", "_scan_board", "_element_text", "
           "_div_balance", "hand_fingerprint", "parse_due_value", "_item_open_attr", "_item_due_pending", "_mark_due_moved",
           "_insert_status_chip", "_due_moved_shape", "_item_due_shapeable", "_valid_hm", "_later_due_shape",
           "_time_open_unclosed", "_time_screen_closed", "_time_close_at", "_implied_close",
-          "_open_stack", "_time_range", "_time_text", "_time_reopened", "_time_inner_open", "_time_keeps_open",
+          "_open_stack", "_time_range", "_time_text", "_time_reopened", "_time_inner_open", "_time_keeps_open", "_time_inner_stack", "_tag_walk",
           "_sw_tag_end", "_sw_text_end", "_sw_is_board_js", "_sw_runs", "_sw_src_board_js", "_sw_board_js_in", "_sw_lost", "_swallow_open", "_sw_scan", "swallow_text", "migrate_board_js"]
 COPIED_CONSTS = ["MARKER_START", "MARKER_END", "MOVABLE_SECTIONS", "CANON_SECTIONS", "WEEKDAY_JA", "_SECTION_LABEL_RE",
                  "_CLASS_TAG_RE", "_STRIP_TAGS_RE", "_CHIP_TOKEN_RE", "_CHIP_DONE_RE", "_ITEM_CLASS_RE",
                  "_ANY_CLASS_TAG_RE", "_HEADER_RE", "_TITLE_RE", "_UPD_TIME_RE", "_ITEM_OPEN_RE", "_TIME_OPEN_RE",
                  "_FOOTER_LINE_RE", "_DUE_VALUE_RE", "_SPAN_CLASS_RE", "_KEY_STOP_RE", "_ROW_PART_RE", "_TAG_TOKEN_RE", "_VOID_TAGS", "_P_CLOSERS",
-                 "_FORMATTING_TAGS", "_KEEP_OPEN_TAGS", "_MATH_POINTS", "_SVG_POINTS",
+                 "_FORMATTING_TAGS", "_KEEP_OPEN_TAGS", "_MATH_POINTS", "_SVG_POINTS", "_KEEP_OPEN_HTML",
                  "_BOARD_JS_TAIL_RE", "_BOARD_CSS_LINK", "_BOARD_JS_HEAD", "_SWALLOW_TAGS", "_FOREIGN_BREAKOUT", "_SW_TAG_RE", "_SW_ATTR_NAME_RE", "_SW_UNQUOTED_RE", "_SW_SPACE", "_SW_SCRIPT_RE", "_SW_ROW_RE", "_SW_START_RE", "_SW_JS_TYPES", "_SW_SCRIPT_OPEN_RE", "_SW_SRC_RE"]
 # 書き込みの記録（.guard/）の節。Deck v2.6 が board_edit.py から写したもの
 GUARD_COPIED = ["_guard_atomic_write", "guard_format_ok", "guard_write_record", "guard_remove_record",
@@ -1951,9 +1985,56 @@ class TestBrokenTimeKey(Sandbox):
                 r = row(inner)
                 self.assertIsNone(be._time_screen_closed(r, be._time_open_unclosed(r)))
                 self.assertFalse(be._time_reopened(r, be._time_open_unclosed(r)))
-        self.assertTrue(be._time_keeps_open(["math", "mi"]))
-        self.assertFalse(be._time_keeps_open(["mi"]))
-        self.assertFalse(be._time_keeps_open(["mi", "math"]))      # math が mi より内側なら数えない
+        self.assertTrue(be._time_keeps_open(be._time_inner_stack("<math><mi>", 0, 10)))
+        self.assertFalse(be._time_keeps_open(be._time_inner_stack("<mi>", 0, 4)))
+        self.assertFalse(be._time_keeps_open(be._time_inner_stack("<mi><math>", 0, 10)))      # math が mi より内側なら数えない
+
+    def test_time_field_foreign(self):
+        """時刻の欄の中の svg・math を、ブラウザと同じ決まりで読む（_tag_walk・v2.19 / board_edit.py v1.15。TIME_FOREIGN_CASES）。
+        抜ける HTML のタグの後ろの mi・desc と、svg の中の textarea・style は数えない（v1.14 までは数えた）。境界の中の HTML から書いた </svg> は
+        読み飛ばす（v1.14 までは閉じた）。"close" の形は close-time が補え、Deck と同じ結果を返す。"""
+        for inner, want in TIME_FOREIGN_CASES:
+            with self.subTest(inner=inner):
+                r = time_foreign_row(inner)
+                hit = be._time_open_unclosed(r)
+                got = ("close" if be._time_screen_closed(r, hit) is not None else
+                       "reopen" if be._time_reopened(r, hit) else "keep")
+                self.assertEqual(got, want)
+                self.assertEqual(be._time_close_at(r, reopen=True), dw._time_close_at(r, reopen=True))
+                at = be._time_close_at(r)
+                if want == "close":
+                    self.assertIsInstance(at, tuple)
+                    fixed = r[:at[0]] + at[1] + r[at[0]:]
+                    self.assertIsNone(be._time_open_unclosed(fixed))
+                    self.assertEqual(be._item_key(fixed), be._item_key(r))
+                elif want == "reopen":
+                    self.assertEqual(at, "format")
+                else:
+                    self.assertNotIsInstance(at, tuple)
+        # 境界の中では、外側の閉じタグで欄を閉じない（_implied_close）
+        r = time_foreign_row("<svg><foreignObject><span>x</svg>")
+        m = be._TIME_OPEN_RE.search(r)
+        self.assertIsNone(be._implied_close(r[:r.index("<p class")], m.end(), ["div"]))
+        self.assertEqual(be._implied_close(r, m.end(), ["div"]), dw._implied_close(r, m.end(), ["div"]))
+
+    def test_time_field_foreign_not_slow(self):
+        """時刻の欄の中が深く入れ子になった行でも、約 100KB で 1 秒未満（_tag_walk は区間ごとの名前の数で、閉じタグの名前が区間に無ければ
+        並びを辿らない。区間ごとの数を持つ前は、境界の中の HTML の要素が深く入れ子になった 108KB の形で _time_close_at が 4 秒を超えた）。"""
+        import time
+        n = 8000
+        forms = {"svg の中の深い g": "<svg>" + "<g>" * n,
+                 "境界の中の HTML の入れ子": "<svg>" + "<foreignObject><span>" * (n // 2) + "</svg>" * (n // 2),
+                 "書式の要素の入れ子": "<b>" * n, "span の開きと閉じ": "<span>" * (n // 2) + "</span>" * (n // 2),
+                 "svg と desc の交互": "<svg><desc>" * (n // 2), "境界の中の外側の閉じタグ": "<svg><foreignObject>" + "</div></g></x>" * (n // 3)}
+        for name, inner in forms.items():
+            r = time_foreign_row(inner)
+            for mod in (be, dw):
+                with self.subTest(form=name, mod=mod.__name__):
+                    t0 = time.process_time()   # 同時に動くブラウザの試験に左右されないよう、この処理の CPU 時間で測る
+                    mod._time_close_at(r)
+                    mod._time_close_at(r, reopen=True)
+                    mod._item_key(r)
+                    self.assertLess(time.process_time() - t0, 1)
 
     def test_inner_p_closed_by_p(self):
         """欄の中の p は、後ろの p を閉じる開きタグでブラウザが閉じるので、閉じタグを数えない。
