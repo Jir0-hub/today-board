@@ -815,13 +815,13 @@ COPIED = ["_blank_comments", "_canon_section", "_scan_board", "_element_text", "
           "_div_balance", "hand_fingerprint", "parse_due_value", "_item_open_attr", "_item_due_pending", "_mark_due_moved",
           "_insert_status_chip", "_due_moved_shape", "_item_due_shapeable", "_valid_hm", "_later_due_shape",
           "_time_open_unclosed", "_time_screen_closed", "_time_close_at", "_implied_close",
-          "_open_stack", "_time_range", "_time_text", "_time_reopened", "_time_inner_open", "_time_keeps_open", "_time_inner_stack", "_tag_walk",
+          "_open_stack", "_time_range", "_time_text", "_time_reopened", "_time_inner_open", "_time_keeps_open", "_time_inner_stack", "_tag_walk", "_time_match_close", "_in_foreign", "_blank_markup", "_markup_free",
           "_sw_tag_end", "_sw_text_end", "_sw_is_board_js", "_sw_runs", "_sw_src_board_js", "_sw_board_js_in", "_sw_lost", "_swallow_open", "_sw_scan", "swallow_text", "migrate_board_js"]
 COPIED_CONSTS = ["MARKER_START", "MARKER_END", "MOVABLE_SECTIONS", "CANON_SECTIONS", "WEEKDAY_JA", "_SECTION_LABEL_RE",
                  "_CLASS_TAG_RE", "_STRIP_TAGS_RE", "_CHIP_TOKEN_RE", "_CHIP_DONE_RE", "_ITEM_CLASS_RE",
                  "_ANY_CLASS_TAG_RE", "_HEADER_RE", "_TITLE_RE", "_UPD_TIME_RE", "_ITEM_OPEN_RE", "_TIME_OPEN_RE",
                  "_FOOTER_LINE_RE", "_DUE_VALUE_RE", "_SPAN_CLASS_RE", "_KEY_STOP_RE", "_ROW_PART_RE", "_TAG_TOKEN_RE", "_VOID_TAGS", "_P_CLOSERS",
-                 "_FORMATTING_TAGS", "_KEEP_OPEN_TAGS", "_MATH_POINTS", "_SVG_POINTS", "_KEEP_OPEN_HTML",
+                 "_FORMATTING_TAGS", "_KEEP_OPEN_TAGS", "_MATH_POINTS", "_SVG_POINTS", "_KEEP_OPEN_HTML", "_MARKUP_TAG_RE", "_BLANK_CACHE",
                  "_BOARD_JS_TAIL_RE", "_BOARD_CSS_LINK", "_BOARD_JS_HEAD", "_SWALLOW_TAGS", "_FOREIGN_BREAKOUT", "_SW_TAG_RE", "_SW_ATTR_NAME_RE", "_SW_UNQUOTED_RE", "_SW_SPACE", "_SW_SCRIPT_RE", "_SW_ROW_RE", "_SW_START_RE", "_SW_JS_TYPES", "_SW_SCRIPT_OPEN_RE", "_SW_SRC_RE"]
 # 書き込みの記録（.guard/）の節。Deck v2.6 が board_edit.py から写したもの
 GUARD_COPIED = ["_guard_atomic_write", "guard_format_ok", "guard_write_record", "guard_remove_record",
@@ -1750,9 +1750,42 @@ class TestBrokenTimeKey(Sandbox):
             self.assertEqual(be._item_key(row), old)
             self.assertEqual(dw._item_key(row), old)
             self.assertFalse(be._time_unclosed(row))
-        # class の無い同じ名前の子が先に閉じる欄は、中に class を持つ要素があっても K15 に当たらない（board.js の⑥も数えない）
-        self.assertFalse(be._time_unclosed('<div class="item"><span class="time"><span>9</span>:00 <span class="x">a</span></span>'
-                                           '<div><p class="task-title">T</p></div></div>'))
+        # class の無い同じ名前の子が先に閉じる欄も、中に class を持つ要素があれば K15 に当たる（board.js の⑥も数える）。欄の閉じタグは
+        # 入れ子を数えて決めるので、鍵の時刻は「9:00」（v2.20 / board_edit.py v1.16。v1.15 までは K15 に当たらず、鍵は「9」）
+        row = '<div class="item"><span class="time"><span>9</span>:00 <span class="x">a</span></span><div><p class="task-title">T</p></div></div>'
+        self.assertTrue(be._time_unclosed(row))
+        self.assertEqual(be._item_key(row), "9:00|T")
+        self.assertEqual(dw._item_key(row), "9:00|T")
+
+    def test_time_field_markup_and_self_closing(self):
+        """欄の閉じタグを数えるとき、コメントの中と属性の値の中の </span> は数えず、HTML の要素の <span/> は開きタグとして数える
+        （ブラウザと同じ。v2.20 / board_edit.py v1.16）。鍵・K15・close-time・set-time と、Deck の写しが同じ結果になる。"""
+        def row(inner):
+            return '<div class="item"><span class="time">0:00 %s</span><div><p class="task-title">T</p></div></div>' % inner
+        cases = [("<!-- </span> -->", "0:00|T", False), ('<span title="</span>">a</span>', "0:00 a|T", False),
+                 ("<!-- <span class=\"x\"> -->", "0:00|T", False), ("<span/>x", "0:00 x|T", True),
+                 # 閉じタグまでを文字として読む要素の中身と、svg・math の中の CDATA の中の </span> も数えない（文字は欄の文字に入る）
+                 ("<script></span></script>", "0:00 </span>|T", False), ("<textarea></span></textarea>", "0:00 </span>|T", False),
+                 ("<style></span></style>", "0:00 </span>|T", False), ("<title></span></title>", "0:00 </span>|T", False),
+                 ("<svg><![CDATA[</span>]]></svg>", "0:00 </span>|T", False)]
+        for inner, key, k15 in cases:
+            with self.subTest(inner=inner):
+                r = row(inner)
+                self.assertEqual(be._item_key(r), key)
+                self.assertEqual(dw._item_key(r), key)
+                self.assertEqual(be._time_unclosed(r), k15)
+                self.assertEqual(be._time_close_at(r), dw._time_close_at(r))
+                if not k15:
+                    out = "".join(be.block_set_time(r.splitlines(keepends=True), "\n", "11:00"))
+                    self.assertEqual(be._item_key(out), "11:00|T")
+                    self.assertNotIn("</span></span>", out)
+        # <b/> は書式の要素として開き、閉じた後で開き直される（_time_reopened）
+        r = '<div class="item"><div><span class="time">0:00 <b/>x</div><p class="task-title">T</p></div></div>'
+        self.assertTrue(be._time_reopened(r, be._time_open_unclosed(r)))
+        # svg の中の /> は閉じる（<svg><a/></svg> の a は開きタグに数えない）
+        r = '<div class="item"><a class="time">0:00 <svg><a/></svg></a><div><p class="task-title">T</p></div></div>'
+        self.assertFalse(be._time_unclosed(r))
+        self.assertEqual(be._item_key(r), "0:00|T")
 
     def test_status_warns_and_close_time_repairs(self):
         """status は閉じタグの無い欄を K15 で知らせ、time は欄の文字だけを出す。close-time は閉じタグを補い、鍵も文言も変えない。"""
@@ -1958,6 +1991,13 @@ class TestBrokenTimeKey(Sandbox):
         for t, row in rows.items():
             with self.subTest(tag=t):
                 hit = be._time_open_unclosed(row)
+                if t in be._SWALLOW_TAGS:
+                    # 閉じていない textarea・script などは、後ろの行を文字として読む（タイトルは要素にならない＝K16）。欄の中に class を持つ
+                    # 要素は無いので K15 には当たらない（v2.20 / board_edit.py v1.16。それまでは中身の文字のタグを数えて当てた。
+                    # どちらの版でも status は K16 の行に K15 を出さない）
+                    self.assertIsNone(hit)
+                    self.assertEqual(dw._time_open_unclosed(row), None)
+                    continue
                 self.assertIsNotNone(hit)
                 self.assertIsNone(be._time_screen_closed(row, hit))
                 self.assertFalse(be._time_reopened(row, hit))
@@ -1980,7 +2020,8 @@ class TestBrokenTimeKey(Sandbox):
                 self.assertIsNotNone(be._time_screen_closed(r, be._time_open_unclosed(r)))
                 self.assertIsInstance(be._time_close_at(r), tuple)
                 self.assertEqual(be._time_close_at(r), dw._time_close_at(r))
-        for inner in ("<math><mi>", "<math><mrow><mo>", "<math><annotation-xml>", "<svg><foreignObject>", "<svg><g><desc>", "<svg><title>", "<title>"):
+        self.assertIsNone(be._time_open_unclosed(row("<title>")))      # 閉じていない title は後ろを文字として読む（K16。上の試験）
+        for inner in ("<math><mi>", "<math><mrow><mo>", "<math><annotation-xml>", "<svg><foreignObject>", "<svg><g><desc>", "<svg><title>"):
             with self.subTest(inner=inner):
                 r = row(inner)
                 self.assertIsNone(be._time_screen_closed(r, be._time_open_unclosed(r)))
@@ -2016,6 +2057,23 @@ class TestBrokenTimeKey(Sandbox):
         m = be._TIME_OPEN_RE.search(r)
         self.assertIsNone(be._implied_close(r[:r.index("<p class")], m.end(), ["div"]))
         self.assertEqual(be._implied_close(r, m.end(), ["div"]), dw._implied_close(r, m.end(), ["div"]))
+
+    def test_time_field_markup_not_slow(self):
+        """コメント・閉じタグまでを文字として読む要素・CDATA が多い行でも、約 400KB で 1 秒未満（_blank_markup は --> と --!> を一度探した
+        位置を持ち、同じ行は一度だけ作って使い回す。持つ前は、--!> の無い 480KB の形で 18 秒かかった）。"""
+        import time
+        forms = {"閉じたコメント": "<!-- </span> -->" * 30000, "閉じないコメント": "<!--" + "</span>" * 60000,
+                 "script": "<script></span></script>" * 20000, "CDATA": "<svg>" + "<![CDATA[</span>]]>" * 20000}
+        for name, inner in forms.items():
+            r = time_foreign_row(inner)
+            for mod in (be, dw):
+                with self.subTest(form=name, mod=mod.__name__):
+                    t0 = time.process_time()
+                    mod._time_open_unclosed(r)
+                    mod._time_close_at(r)
+                    mod._time_close_at(r, reopen=True)
+                    mod._item_key(r)
+                    self.assertLess(time.process_time() - t0, 1)
 
     def test_time_field_foreign_not_slow(self):
         """時刻の欄の中が深く入れ子になった行でも、約 100KB で 1 秒未満（_tag_walk は区間ごとの名前の数で、閉じタグの名前が区間に無ければ

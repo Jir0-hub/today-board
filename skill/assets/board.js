@@ -264,10 +264,11 @@
   var tbBindTimeEl = null;
   // 行の鍵（D&D で Deck へ送る k・localStorage の移動と × の記録・✎ の上書き・通知の鍵）の作り方は Deck の _key_text が正本で
   // （Deck v2.14・board_edit.py v1.10 が同じ関数を写して持つ。欄の範囲は Deck v2.15・board_edit.py v1.11）、ここはその規則を DOM に当てたもの
-  // （2026-11-06 ユーザー決定「鍵の作り方を1か所にまとめる」）。Deck は HTML の文字を、要素の開きタグの後から、要素と同じ名前の最初の閉じタグの
-  // 手前まで読む（stopAtClass が真なら、その前の class を持つ開きタグの手前まで。さらに時刻の欄は、ブラウザが欄とみなす範囲〔Deck の
-  // _time_range＝閉じタグの無い欄はブラウザが閉じる所まで、p の欄は後ろの p を閉じる要素の手前まで〕の終わりでも読み終える）。DOM では、
-  // 要素の中を HTML の並びどおりにたどって文字を集め、同じ名前の子孫の終わり（＝最初の閉じタグ）か、class を持つ子孫の始まりで読み終える
+  // （2026-11-06 ユーザー決定「鍵の作り方を1か所にまとめる」）。Deck は HTML の文字を、タイトルは要素の開きタグの後から、要素と同じ名前の最初の
+  // 閉じタグの手前まで読み、時刻の欄（stopAtClass が真）は、ブラウザが欄とみなす範囲〔Deck の _time_range＝同じ名前の開きと閉じを数えて欄を
+  // 閉じる閉じタグまで、閉じタグの無い欄はブラウザが閉じる所まで、p の欄は後ろの p を閉じる要素の手前まで〕を、class を持つ開きタグの手前まで読む
+  // （入れ子を数えるのは Deck v2.20・board_edit.py v1.16）。DOM では、要素の中を HTML の並びどおりにたどって文字を集め、class を持つ子孫の始まりで
+  // 読み終える（stopAtClass が偽のときは、同じ名前の子孫の終わり〔＝最初の閉じタグ〕でも読み終える）
   // （DOM の要素はブラウザが閉じた所で終わるので、範囲の終わりはそろう。ただし Deck の `_implied_close`・`_P_CLOSERS` の注釈に挙げた形〔同じ名前の閉じタグが外側の閉じタグの後にある欄・標準モードの板の p の欄の table〕は除く）。ブラウザは閉じタグの無い要素の中に後ろの要素を取り込むが、
   // 取り込まれた要素の文字は読まないので、HTML の文字から作る Deck の鍵と合う。
   // file: で開いた板では元の HTML の文字を読めず、Deck が止まっていても鍵は要るので、ブラウザでも作る。一致は試験で見る
@@ -280,7 +281,9 @@
         if (c.nodeType !== 1) continue;
         if (stopAtClass && c.hasAttribute('class')) { done = stopped = true; return; }
         walk(c);
-        if (c.tagName === tag) done = true;
+        // 時刻の欄（stopAtClass）は、中で閉じた同じ名前の子（<span class="time"><span>9</span>:00</span> の <span>）で読み終えない（DOM の欄は
+        // ブラウザが閉じた所で終わる＝Deck の _time_range と同じ。2026-11-13・Deck v2.20）。タイトルは従来どおり同じ名前の子の終わりで読み終える
+        if (!stopAtClass && c.tagName === tag) done = true;
       }
     })(el);
     return { text: out, stopped: stopped };
@@ -327,11 +330,12 @@
   function tbTitleText(el) {
     return el ? tbKeyText(el, false) : '';
   }
-  // data-tb-unclosed＝欄と同じ名前の最初の閉じタグより前に class を持つ要素がある欄（tbKeyWalk が class で止まった欄。「ボードの点検」の⑥が
+  // data-tb-unclosed＝欄の中に class を持つ要素がある欄（tbKeyWalk が class で止まった欄。「ボードの点検」の⑥が
   // 数える）。board_edit.py の _time_open_unclosed・警告 K15 は HTML の文字で同じ形を見るが、ここは DOM しか見られないので、ブラウザが欄を
   // タイトルやチップの手前で閉じる形（<p class="time">9:00<div><p class="task-title">… など。閉じタグは無いが、DOM の欄の中に class を持つ
   // 要素が無い＝Deck v2.16 / board_edit.py v1.12 の _time_screen_closed）は、K15 に出ても⑥には出ない。class の無い同じ名前の子が先に閉じる欄
-  // （<span class="time"><span>9</span>:00 <span class="x">…</span></span> など）は、✎ は守るが⑥には数えない（K15 にも出ないため）
+  // （<span class="time"><span>9</span>:00 <span class="x">…</span></span> など）も、欄の中に class を持つ要素があるので⑥に数える（K15 にも出る。
+  // Deck v2.20・board_edit.py v1.16 から。それまでは同じ名前の子の終わりで読み終え、⑥にも K15 にも出さなかった）
   Array.prototype.forEach.call(document.querySelectorAll('.item .time'), function (el) {
     if (!el.querySelector('[class]')) return;
     var w = tbKeyWalk(el, true);

@@ -3396,6 +3396,10 @@ class TestBrokenTimeKeys(BrowserCase):
                   '<div class="chips"><span class="chip pending">未</span></div></div>',
                   # 欄の中の p を後ろの p が閉じる形（足すのは </p></span>）
                   '<div class="item"><div><span class="time">9:00 <p>a<p>b</div><p class="task-title">%s</p>'
+                  '<div class="chips"><span class="chip pending">未</span></div></div>',
+                  # 欄の中で閉じた同じ名前の span の後ろに文字があり、欄そのものは閉じていない形（v2.20 / board_edit.py v1.16 から K15。
+                  # v1.15 までは中の span の閉じタグを欄の閉じタグと読み、K15 に出さなかった）
+                  '<div class="item"><div><span class="time">9:00 <span>a</span>x</div><p class="task-title">%s</p>'
                   '<div class="chips"><span class="chip pending">未</span></div></div>']
         rows = []
         for i, s in enumerate(shapes):
@@ -3481,6 +3485,10 @@ class TestBrokenTimeKeys(BrowserCase):
                 if (tag, opener) in controls:
                     self.assertIsNotNone(dw._time_screen_closed(row, dw._time_open_unclosed(row)))
                     self.assertIn(closed, dom)                 # 対照: ブラウザは </div> で欄を閉じ、タイトルは欄の外
+                elif tag in dw._SWALLOW_TAGS:
+                    # 閉じていない textarea・script などは後ろを文字として読み、欄の中に class を持つ要素が無い（K16 で知らせる。v2.20）
+                    self.assertIsNone(dw._time_open_unclosed(row))
+                    self.assertNotIn(closed, dom, tag)
                 else:
                     self.assertIsNone(dw._time_screen_closed(row, dw._time_open_unclosed(row)))
                     self.assertNotIn(closed, dom, tag)
@@ -3518,6 +3526,80 @@ class TestBrokenTimeKeys(BrowserCase):
                 if want == "close":
                     self.assertEqual(o["後"]["html"], o["前"]["html"])
 
+    def test_nested_same_name_time_fields(self):
+        """時刻の欄の中に、中で閉じた同じ名前の要素がある行（v2.20 / board_edit.py v1.16）。欄の閉じタグは入れ子を数えて決めるので、
+        board.js の鍵（D&D で送る k）は Deck の鍵（_item_key）と同じで、Deck はその鍵で行を見つけて移す。中に class を持つ要素がある欄と、
+        閉じタグが無くタイトルが欄の中に入る欄は「ボードの点検」の⑥に数える（3 件）。欄の文字は DOM の欄と同じ。コメントの中・属性の値の中の
+        </span> は欄を閉じず、<span/> は開きタグとして読む（ブラウザと同じ）。"""
+        self.start_deck()
+        shapes = [("入れ子1", '<div class="item"><span class="time"><span>0</span>:00</span><div><p class="task-title">入れ子1</p>'
+                              '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", False),
+                  ("入れ子2", '<div class="item"><div><span class="time">0:00 <span>a</span>x</div><p class="task-title">入れ子2</p>'
+                              '<div class="chips"><span class="chip pending">未</span></div></div>\n', "0:00 ax", False),
+                  ("入れ子3", '<div class="item"><span class="time"><span>0</span>:00 <span class="x">a</span></span><div><p class="task-title">入れ子3</p>'
+                              '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", True),
+                  ("入れ子4", '<div class="item"><span class="time"><span>0</span>:00<div><p class="task-title">入れ子4</p>'
+                              '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", True),
+                  # コメントの中・属性の値の中の </span> は欄を閉じず、<span/> は開きタグ（v2.20 / board_edit.py v1.16）
+                  ("注釈", '<div class="item"><span class="time">0:00 <!-- </span> --></span><div><p class="task-title">注釈</p>'
+                           '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", False),
+                  ("属性", '<div class="item"><span class="time">0:00 <span title="</span>">a</span></span><div><p class="task-title">属性</p>'
+                           '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00 a", False),
+                  ("自閉", '<div class="item"><span class="time">0:00 <span/>x</span><div><p class="task-title">自閉</p>'
+                           '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00 x", True)]
+        # 閉じタグまでを文字として読む要素の中身と、svg の中の CDATA の中の </span> も欄を閉じない（中の文字は欄の文字）
+        for tag in ("script", "textarea", "style", "title"):
+            shapes.append(("中" + tag, '<div class="item"><span class="time">0:00 <%s></span></%s></span><div><p class="task-title">中%s</p>'
+                                      '<div class="chips"><span class="chip pending">未</span></div></div></div>\n' % (tag, tag, tag),
+                           "0:00 </span>", False))
+        shapes.append(("中cdata", '<div class="item"><span class="time">0:00 <svg><![CDATA[</span>]]></svg></span><div><p class="task-title">中cdata</p>'
+                                  '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00 </span>", False))
+        titles = [t for t, _r, _k, _u in shapes]
+        self.write_board(rows='\n<div class="section-label">今日中</div>\n' + "".join(r for _t, r, _k, _u in shapes),
+                         time="0:00", extra=TestLaterDueAsk.SCRIPT % (
+            "var mv=[];var of=window.fetch;window.fetch=function(u,o){if(String(u).indexOf('/board/move')>=0)"
+            "mv.push(JSON.parse(o.body).k);return of.apply(this,arguments);};"
+            "setTimeout(function(){if(n!==1)return;var c=document.getElementById('tb-board-check');"
+            "document.documentElement.setAttribute('data-check',c?c.textContent:'');var u={};"
+            "%s.forEach(function(t){u[t]=tbItem(t).querySelector('.time').hasAttribute('data-tb-unclosed');});"
+            "document.documentElement.setAttribute('data-u',JSON.stringify(u));"
+            "%s.forEach(function(t){tbDnd(t,'今日の予定');});"
+            "setTimeout(function(){document.documentElement.setAttribute('data-mvk',JSON.stringify(mv));},600);},800);"
+            % (json.dumps(titles, ensure_ascii=False), json.dumps(titles, ensure_ascii=False))))
+        before = self.file_keys()
+        want = {t: "%s|%s" % (k, t) for t, _r, k, _u in shapes}
+        self.assertEqual({t: before[t][1] for t in titles}, want)
+        dom = self.open_page(self.board, budget=5000)
+        self.assertEqual(json.loads(self.attr(dom, "data-u")), {t: u for t, _r, _k, u in shapes})
+        self.assertIn("時刻の欄の閉じタグが無いタスクがあります（3 件）", self.attr(dom, "data-check"))
+        self.assertEqual(sorted(json.loads(self.attr(dom, "data-mvk"))), sorted(want.values()))   # Deck へ送った鍵
+        end = time.time() + 10
+        while time.time() < end and any(self.file_keys()[t][0] != "今日の予定" for t in titles):
+            time.sleep(0.1)
+        self.assertEqual({t: self.file_keys()[t][0] for t in titles}, {t: "今日の予定" for t in titles})   # Deck が同じ鍵で見つけて移した
+
+    def test_nested_same_name_set_time(self):
+        """中で閉じた同じ名前の要素がある、閉じた時刻の欄に set-time を当てた行（board_edit.py v1.16 の _replace_element_inner）は、
+        画面の欄の文字が新しい時刻だけになり、元の文字は欄の外に残らない（v1.15 までは中の span の閉じタグまでを書き換え、:00 と閉じタグが残った）。"""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import test_board_edit as tbe
+        rows = {"後1": '<div class="item"><div><span class="time"><span>9</span>:00</span><p class="task-title">後1</p></div></div>',
+                "後2": '<div class="item"><div><span class="time">9:00 <span>a</span></span><p class="task-title">後2</p></div></div>'}
+        js = ("<script>document.addEventListener('DOMContentLoaded',function(){var o={};"
+              "Array.prototype.forEach.call(document.querySelectorAll('.item'),function(it){var t=it.querySelector('.task-title');"
+              "var tm=it.querySelector('.time');o[t.textContent]=[tm.textContent,it.textContent];});"
+              "document.documentElement.setAttribute('data-o',JSON.stringify(o));});</script>")
+        out = []
+        for title, row in rows.items():
+            self.assertFalse(tbe.be._time_unclosed(row))
+            out.append("".join(tbe.be.block_set_time(row.splitlines(keepends=True), "\n", "11:00")))
+        page = os.path.join(os.path.dirname(self.board), "settime.html")
+        with open(page, "w", encoding="utf-8") as f:
+            f.write('<html><head><meta charset="utf-8">%s</head><body>\n%s\n</body></html>' % (js, "\n".join(out)))
+        o = json.loads(self.attr(self.open_page(page, budget=1000), "data-o"))
+        for title in rows:
+            self.assertEqual(o[title], ["11:00", "11:00" + title], title)
+
     def test_check_counts_items(self):
         """⑥は項目ごとに数える（時刻の欄が2つとも閉じていない行も1件。board_edit.py の K15 と同じ）。"""
         self.start_deck()
@@ -3533,13 +3615,17 @@ class TestBrokenTimeKeys(BrowserCase):
         self.assertIn("時刻の欄の閉じタグが無いタスクがあります（1 件）", self.attr(dom, "data-check"))
 
     def test_wellformed_board_has_no_check(self):
-        """閉じタグのある行（class の無い入れ子の <div class="time"><div>9:00</div></div> と、class の無い同じ名前の子が先に閉じる
-        <span class="time"><span>9</span>:00 <span class="x">a</span></span>＝K15 に当たらない形を含む）では知らせない。"""
+        """閉じタグのある行（class の無い入れ子の <div class="time"><div>9:00</div></div> と、中で閉じた同じ名前の span がある
+        <span class="time">9:00 <span>a</span></span>・<span class="time"><span>9</span>:00</span>）では知らせない。
+        中に class を持つ要素がある <span class="time"><span>9</span>:00 <span class="x">a</span></span> は、v2.20 / board_edit.py v1.16 から
+        ⑥に数える（test_nested_same_name_time_fields）。"""
         self.start_deck()
         self.write_board(rows='\n<div class="section-label">今日中</div>\n'
                               '<div class="item"><div class="time"><div>9:00</div></div><div><p class="task-title">入れ子</p>'
                               '<div class="chips"><span class="chip pending">未</span></div></div></div>\n'
-                              '<div class="item"><span class="time"><span>9</span>:00 <span class="x">a</span></span><div><p class="task-title">子</p>'
+                              '<div class="item"><span class="time">9:00 <span>a</span></span><div><p class="task-title">子</p>'
+                              '<div class="chips"><span class="chip pending">未</span></div></div></div>\n'
+                              '<div class="item"><span class="time"><span>9</span>:00</span><div><p class="task-title">子2</p>'
                               '<div class="chips"><span class="chip pending">未</span></div></div></div>\n',
                          extra=TestLaterDueAsk.SCRIPT % (
                              "setTimeout(function(){var c=document.getElementById('tb-board-check');"
