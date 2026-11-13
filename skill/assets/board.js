@@ -127,9 +127,9 @@
   //      記入例など）は見ない（K16 と同じ）
   //   ⑤ 本文の要素の属性の値に同じものがある（引用符の閉じていない属性の値が、後ろの行のタグを取り込んだ形）
   //   ⑥ svg・math の要素の直下の文字に行の開きタグがある（閉じた CDATA の中など）。偽のコメント（<!・<?・</ で始まる形）が > の無い行の開きタグで終わる
-  //   限界: DOM では、エスケープした文字（&lt;…&gt;）を svg の text・math・textarea などに書いた形と、自分の --> で閉じたコメントが空白を挟まずに
+  //   限界: DOM では、エスケープした文字（&lt;…&gt;）を svg の text・math・textarea・属性の値などに書いた形と、自分の --> で閉じたコメントが空白を挟まずに
   //   行の開きタグの途中で終わる形（<!--<div class="item"-->）を、取り込んだ開きタグと見分けられないので、その形でも⑦が出る（K16 は HTML の文字で
-  //   見るので出ない。Chrome で確かめた・2026-11-11・n=1）
+  //   見るので出ない。Chrome と Edge で確かめた・2026-11-11・各 n=1）
   var TB_CUT = (function () {
     var ROW = /<[A-Za-z][\w-]*\b[^<>]*?\sclass\s*=\s*["']?(?:[^"'<>]*\s)?(?:task-title|task-note|chips|chip|item|section-label)(?=["'\s>\/])/i;
     function lost(s) { return !!s && (ROW.test(s) || s.indexOf('DECK:AUTO') >= 0); }

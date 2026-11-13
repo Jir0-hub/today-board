@@ -10,6 +10,9 @@ DOM を出せる Chrome も Edge も見つからなければ飛ばす。Chrome �
 Edge は、互換モードの下で起こされたと見ると自分を起こし直し、起こし直した側は標準出力を引き継がないので、
 --dump-dom が何も出さずに戻る（実行ファイルの互換性の設定〔HIGHDPIAWARE 等〕や、親から継いだ環境変数 __COMPAT_LAYER で起きる）。
 そのため Edge には --edge-skip-compat-layer-relaunch を足して起こす（browser_cmd）。
+確かめた条件: Edge 157.0.4341.42。HKCU の AppCompatFlags の Layers に msedge.exe の HIGHDPIAWARE があり、親から継いだ環境変数
+__COMPAT_LAYER がある環境で、Application フォルダ直下の msedge.exe を新しい一時プロファイルで指定なし・ありの4回ずつ（指定なしは4回とも
+--dump-dom の出力が0バイト、指定ありは4回とも DOM が出た）、版のフォルダの msedge.exe を1回ずつ（同じ結果）起こした（2026-11-11）。ほかの版・設定の無い環境では確かめていない。
 すべて一時フォルダで行い、Deck の受信は 18737 以降の臨時のポートだけを使う
 （板の接続情報もそのポートを指すので、本番の 8737〜8746 へは送らない）。プロファイルも一時フォルダに作る。
 """
