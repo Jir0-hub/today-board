@@ -799,12 +799,18 @@ TIME_FOREIGN_CASES = [
     ('<math><annotation-xml encoding="text/html">', "keep"),
     ("<svg><foreignObject>y</foreignObject>", "close"),
     ("<svg><desc>y</desc></svg>", "close"),
+    # 欄が div で、中の範囲の境界（table の td・object）が開いたまま。</div> は範囲の外の欄まで届かず、欄を閉じない（3つ目＝欄のタグ。v2.21 / board_edit.py v1.17）
+    ("<table><tr><td>", "keep", "div"),
+    ("<object>", "keep", "div"),
+    # 欄が p で、中に開いたままの button がある。</p> は欄を閉じず、外側の </div> で閉じる（ボタンの範囲）。table の td なら </div> も届かない
+    ("<button>a</p>", "close", "p"),
+    ("<table><tr><td>a</p>", "keep", "p"),
 ]
 
 
-def time_foreign_row(inner, title="T"):
-    return ('<div class="item"><div><span class="time">9:00 %sx</div><p class="task-title">%s</p>'
-            '<div class="chips"><span class="chip pending">未</span></div></div>' % (inner, title))
+def time_foreign_row(inner, title="T", tag="span"):
+    return ('<div class="item"><div><%s class="time">9:00 %sx</div><p class="task-title">%s</p>'
+            '<div class="chips"><span class="chip pending">未</span></div></div>' % (tag, inner, title))
 
 
 # ------------------------------------------------------------------ T-P（Deck との写しの一致）
@@ -815,13 +821,13 @@ COPIED = ["_blank_comments", "_canon_section", "_scan_board", "_element_text", "
           "_div_balance", "hand_fingerprint", "parse_due_value", "_item_open_attr", "_item_due_pending", "_mark_due_moved",
           "_insert_status_chip", "_due_moved_shape", "_item_due_shapeable", "_valid_hm", "_later_due_shape",
           "_time_open_unclosed", "_time_screen_closed", "_time_close_at", "_implied_close",
-          "_open_stack", "_time_range", "_time_text", "_time_reopened", "_time_inner_open", "_time_keeps_open", "_time_inner_stack", "_tag_walk", "_time_match_close", "_in_foreign", "_blank_markup", "_markup_free",
+          "_open_stack", "_time_range", "_time_text", "_time_reopened", "_time_inner_open", "_time_keeps_open", "_time_inner_stack", "_tag_walk", "_tag_walk_once", "_time_match_close", "_blank_markup", "_markup_free",
           "_sw_tag_end", "_sw_text_end", "_sw_is_board_js", "_sw_runs", "_sw_src_board_js", "_sw_board_js_in", "_sw_lost", "_swallow_open", "_sw_scan", "swallow_text", "migrate_board_js"]
 COPIED_CONSTS = ["MARKER_START", "MARKER_END", "MOVABLE_SECTIONS", "CANON_SECTIONS", "WEEKDAY_JA", "_SECTION_LABEL_RE",
                  "_CLASS_TAG_RE", "_STRIP_TAGS_RE", "_CHIP_TOKEN_RE", "_CHIP_DONE_RE", "_ITEM_CLASS_RE",
                  "_ANY_CLASS_TAG_RE", "_HEADER_RE", "_TITLE_RE", "_UPD_TIME_RE", "_ITEM_OPEN_RE", "_TIME_OPEN_RE",
                  "_FOOTER_LINE_RE", "_DUE_VALUE_RE", "_SPAN_CLASS_RE", "_KEY_STOP_RE", "_ROW_PART_RE", "_TAG_TOKEN_RE", "_VOID_TAGS", "_P_CLOSERS",
-                 "_FORMATTING_TAGS", "_KEEP_OPEN_TAGS", "_MATH_POINTS", "_SVG_POINTS", "_KEEP_OPEN_HTML", "_MARKUP_TAG_RE", "_BLANK_CACHE",
+                 "_FORMATTING_TAGS", "_KEEP_OPEN_TAGS", "_MATH_POINTS", "_SVG_POINTS", "_KEEP_OPEN_HTML", "_MARKUP_TAG_RE", "_BLANK_CACHE", "_HTML_SPECIAL", "_OWN_END_RULE", "_SCOPE_BOUNDS", "_WALK_CACHE", "_HEADINGS",
                  "_BOARD_JS_TAIL_RE", "_BOARD_CSS_LINK", "_BOARD_JS_HEAD", "_SWALLOW_TAGS", "_FOREIGN_BREAKOUT", "_SW_TAG_RE", "_SW_ATTR_NAME_RE", "_SW_UNQUOTED_RE", "_SW_SPACE", "_SW_SCRIPT_RE", "_SW_ROW_RE", "_SW_START_RE", "_SW_JS_TYPES", "_SW_SCRIPT_OPEN_RE", "_SW_SRC_RE"]
 # 書き込みの記録（.guard/）の節。Deck v2.6 が board_edit.py から写したもの
 GUARD_COPIED = ["_guard_atomic_write", "guard_format_ok", "guard_write_record", "guard_remove_record",
@@ -2034,9 +2040,9 @@ class TestBrokenTimeKey(Sandbox):
         """時刻の欄の中の svg・math を、ブラウザと同じ決まりで読む（_tag_walk・v2.19 / board_edit.py v1.15。TIME_FOREIGN_CASES）。
         抜ける HTML のタグの後ろの mi・desc と、svg の中の textarea・style は数えない（v1.14 までは数えた）。境界の中の HTML から書いた </svg> は
         読み飛ばす（v1.14 までは閉じた）。"close" の形は close-time が補え、Deck と同じ結果を返す。"""
-        for inner, want in TIME_FOREIGN_CASES:
+        for inner, want, *tag in TIME_FOREIGN_CASES:
             with self.subTest(inner=inner):
-                r = time_foreign_row(inner)
+                r = time_foreign_row(inner, "T", *tag)
                 hit = be._time_open_unclosed(r)
                 got = ("close" if be._time_screen_closed(r, hit) is not None else
                        "reopen" if be._time_reopened(r, hit) else "keep")
@@ -2057,6 +2063,28 @@ class TestBrokenTimeKey(Sandbox):
         m = be._TIME_OPEN_RE.search(r)
         self.assertIsNone(be._implied_close(r[:r.index("<p class")], m.end(), ["div"]))
         self.assertEqual(be._implied_close(r, m.end(), ["div"]), dw._implied_close(r, m.end(), ["div"]))
+
+    def test_time_field_cdata_in_html_and_blocked_close(self):
+        """svg の HTML として読む所の中の HTML の要素の直下の <![CDATA[ は偽のコメント（中身は鍵に入らない）。HTML として読む所の直下なら CDATA
+        （中身は鍵に入る）。欄の閉じタグが HTML として読む所の中から書かれたもの・間に special の要素（p）があるものは欄を閉じず、K15 に当たる
+        （ブラウザと同じ＝tests/test_board_browser.py の test_nested_same_name_time_fields。v2.21 / board_edit.py v1.17）。"""
+        def row(inner):
+            return ('<div class="item"><span class="time">0:00 %s<div><p class="task-title">T</p>'
+                    '<div class="chips"><span class="chip pending">未</span></div></div></div>' % inner)
+        cases = [('<svg><foreignObject><span><![CDATA[x]]>y</span></foreignObject></svg></span>', "0:00 y|T", False),
+                 ('<svg><foreignObject><![CDATA[x]]></foreignObject></svg></span>', "0:00 x|T", False),
+                 ('<svg><foreignObject></span></foreignObject></svg>', "0:00|T", True),
+                 ('<p>x</span>', "0:00 x|T", True),
+                 ('<div>x</span>', "0:00 x|T", True),
+                 ('<span>x</span></span>', "0:00 x|T", False),
+                 ('<svg><style></span></style></svg>x</span>', "0:00|T", False)]
+        for inner, key, k15 in cases:
+            with self.subTest(inner=inner):
+                r = row(inner)
+                self.assertEqual(be._item_key(r), key)
+                self.assertEqual(dw._item_key(r), key)
+                self.assertEqual(be._time_unclosed(r), k15)
+                self.assertEqual(be._time_close_at(r), dw._time_close_at(r))
 
     def test_time_field_markup_not_slow(self):
         """コメント・閉じタグまでを文字として読む要素・CDATA が多い行でも、約 400KB で 1 秒未満（_blank_markup は --> と --!> を一度探した

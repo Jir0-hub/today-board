@@ -3510,13 +3510,13 @@ class TestBrokenTimeKeys(BrowserCase):
               "fmt:W(t),html:it.outerHTML.split(t.textContent).join('T').replace(/\\s+/g,'')};});"
               "document.documentElement.setAttribute('data-o',JSON.stringify(o));});</script>" % fmt)
         page = os.path.join(os.path.dirname(self.board), "foreign.html")
-        for i, (inner, want) in enumerate(tbe.TIME_FOREIGN_CASES):
+        for i, (inner, want, *tag) in enumerate(tbe.TIME_FOREIGN_CASES):
             with self.subTest(inner=inner):
-                before = tbe.time_foreign_row(inner, "前")
+                before = tbe.time_foreign_row(inner, "前", *tag)
                 rows = [before]
                 if want == "close":
-                    at = dw._time_close_at(tbe.time_foreign_row(inner, "後"))
-                    after = tbe.time_foreign_row(inner, "後")
+                    at = dw._time_close_at(tbe.time_foreign_row(inner, "後", *tag))
+                    after = tbe.time_foreign_row(inner, "後", *tag)
                     rows.insert(0, after[:at[0]] + at[1] + after[at[0]:])
                 with open(page, "w", encoding="utf-8") as f:
                     f.write('<html><head><meta charset="utf-8">%s</head><body>\n%s\n</body></html>' % (js, "\n".join(rows)))
@@ -3527,9 +3527,9 @@ class TestBrokenTimeKeys(BrowserCase):
                     self.assertEqual(o["後"]["html"], o["前"]["html"])
 
     def test_nested_same_name_time_fields(self):
-        """時刻の欄の中に、中で閉じた同じ名前の要素がある行（v2.20 / board_edit.py v1.16）。欄の閉じタグは入れ子を数えて決めるので、
+        """時刻の欄の中に、中で閉じた同じ名前の要素がある行（v2.20 / board_edit.py v1.16）。欄の閉じタグはブラウザの読み方で決めるので（_time_match_close）、
         board.js の鍵（D&D で送る k）は Deck の鍵（_item_key）と同じで、Deck はその鍵で行を見つけて移す。中に class を持つ要素がある欄と、
-        閉じタグが無くタイトルが欄の中に入る欄は「ボードの点検」の⑥に数える（3 件）。欄の文字は DOM の欄と同じ。コメントの中・属性の値の中の
+        閉じタグが無くタイトルが欄の中に入る欄は「ボードの点検」の⑥に数える（件数は shapes の閉じていない行の数）。欄の文字は DOM の欄と同じ。ブラウザが要素として読まない所（コメント・属性の値・閉じタグまでを文字として読む要素の中身・CDATA）の中の
         </span> は欄を閉じず、<span/> は開きタグとして読む（ブラウザと同じ）。"""
         self.start_deck()
         shapes = [("入れ子1", '<div class="item"><span class="time"><span>0</span>:00</span><div><p class="task-title">入れ子1</p>'
@@ -3540,7 +3540,7 @@ class TestBrokenTimeKeys(BrowserCase):
                               '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", True),
                   ("入れ子4", '<div class="item"><span class="time"><span>0</span>:00<div><p class="task-title">入れ子4</p>'
                               '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", True),
-                  # コメントの中・属性の値の中の </span> は欄を閉じず、<span/> は開きタグ（v2.20 / board_edit.py v1.16）
+                  # ブラウザが要素として読まない所（コメント・属性の値など）の中の </span> は欄を閉じず、<span/> は開きタグ（v2.20 / board_edit.py v1.16）
                   ("注釈", '<div class="item"><span class="time">0:00 <!-- </span> --></span><div><p class="task-title">注釈</p>'
                            '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", False),
                   ("属性", '<div class="item"><span class="time">0:00 <span title="</span>">a</span></span><div><p class="task-title">属性</p>'
@@ -3554,6 +3554,24 @@ class TestBrokenTimeKeys(BrowserCase):
                            "0:00 </span>", False))
         shapes.append(("中cdata", '<div class="item"><span class="time">0:00 <svg><![CDATA[</span>]]></svg></span><div><p class="task-title">中cdata</p>'
                                   '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00 </span>", False))
+        # svg の HTML として読む所の中の HTML の要素の直下の <![CDATA[ は偽のコメント（中身は文字にならない）。HTML として読む所の直下なら CDATA。
+        # 欄の閉じタグが、HTML として読む所の中から書かれたものと、間に special の要素（p）があるものは、欄を閉じない（v2.21 / board_edit.py v1.17）
+        for title, inner, tail, key, unclosed in (
+                ("中fo内cdata", '<svg><foreignObject><span><![CDATA[x]]>y</span></foreignObject></svg></span>', "", "0:00 y", False),
+                ("中fo直下cdata", '<svg><foreignObject><![CDATA[x]]></foreignObject></svg></span>', "", "0:00 x", False),
+                ("中fo遮り", '<svg><foreignObject></span></foreignObject></svg>', "", "0:00", True),
+                ("中p遮り", '<p>x</span>', "", "0:00 x", True),
+                # svg の中の style は svg の要素で、中身はタグとして読む（閉じタグまでを文字として読む要素は svg・math の要素として読むもの（<svg><style> など）を除く。foreignObject など HTML として読む所の中のものは除かない）
+                ("中svgstyle", '<svg><style></span></style></svg>x</span>', "", "0:00", False)):
+            shapes.append((title, '<div class="item"><span class="time">0:00 %s<div><p class="task-title">%s</p>'
+                                  '<div class="chips"><span class="chip pending">未</span></div></div>%s</div>\n'
+                                  % (inner, title, "" if unclosed else ""), key, unclosed))
+        # 欄が p で中に開いたままの button がある行（</p> と後ろの <p> は欄を閉じない＝タイトルが欄の中）と、h2 の欄を </h1> で閉じた行（見出しの閉じタグは
+        # どの見出しでも閉じる）。v2.21 / board_edit.py v1.17
+        shapes.append(("中button", '<div class="item"><div><p class="time">0:00 <button>a</p><p class="task-title">中button</p>'
+                                   '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00 a", True))
+        shapes.append(("中h2", '<div class="item"><div><h2 class="time">0:00</h1><p class="task-title">中h2</p>'
+                               '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", False))
         titles = [t for t, _r, _k, _u in shapes]
         self.write_board(rows='\n<div class="section-label">今日中</div>\n' + "".join(r for _t, r, _k, _u in shapes),
                          time="0:00", extra=TestLaterDueAsk.SCRIPT % (
@@ -3571,7 +3589,7 @@ class TestBrokenTimeKeys(BrowserCase):
         self.assertEqual({t: before[t][1] for t in titles}, want)
         dom = self.open_page(self.board, budget=5000)
         self.assertEqual(json.loads(self.attr(dom, "data-u")), {t: u for t, _r, _k, u in shapes})
-        self.assertIn("時刻の欄の閉じタグが無いタスクがあります（3 件）", self.attr(dom, "data-check"))
+        self.assertIn("時刻の欄の閉じタグが無いタスクがあります（%d 件）" % sum(1 for _t, _r, _k, u in shapes if u), self.attr(dom, "data-check"))
         self.assertEqual(sorted(json.loads(self.attr(dom, "data-mvk"))), sorted(want.values()))   # Deck へ送った鍵
         end = time.time() + 10
         while time.time() < end and any(self.file_keys()[t][0] != "今日の予定" for t in titles):
