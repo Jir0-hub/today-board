@@ -154,6 +154,28 @@ def tearDownModule():
 
 @unittest.skipUnless(BROWSER, "DOM を出せる Chrome / Edge が見つからない")
 class BrowserCase(unittest.TestCase):
+    # 板の時計（ページの Date）を、その日の決まった時刻から進める（2026-11-16）。試験の板の時刻（行の 23:59・✎ の上書きの既定 23:30 など）に
+    # 実際の時計が追いつくと、board.js が通知を出して、通知を数える試験が落ちたため（23:3x に走らせた全試験で5件。TB_TEST_PAGE_CLOCK=23:31 で
+    # その5件を走らせると同じ形で落ちることを確かめた）。日付は実際の今日のまま。実際の時刻から時刻を作る試験（minutes_ago）の組は None にする。
+    # 環境変数 TB_TEST_PAGE_CLOCK（H:MM）を入れると、TestTimeAlarm を除く組（PAGE_CLOCK が None でない組）の板の時計をその時刻にする
+    # （時刻に左右される試験を探すため。None の組は実際の時刻から時刻を作るので、上書きすると試験の前提が崩れる）
+    PAGE_CLOCK = "12:00"
+
+    def clock_script(self):
+        """板の時計を PAGE_CLOCK（または TB_TEST_PAGE_CLOCK）の時刻から進める <script>。PAGE_CLOCK が None の組（TestTimeAlarm）は、
+        環境変数があっても空（実際の時刻のまま）。board.js より前に置く（試験が足す DATE_STUB などは、これを包む）。"""
+        if not self.PAGE_CLOCK:
+            return ""
+        hm = os.environ.get("TB_TEST_PAGE_CLOCK") or self.PAGE_CLOCK
+        h, m = (int(x) for x in hm.split(":"))
+        return ("<script>(function(){var R=Date,b=R.now(),d=new R(b),"
+                "off=new R(d.getFullYear(),d.getMonth(),d.getDate(),%d,%d,0).getTime()-b;"
+                "function D(){if(!(this instanceof D))return new R(R.now()+off).toString();"
+                "if(arguments.length===0)return new R(R.now()+off);"
+                "return new (Function.prototype.bind.apply(R,[null].concat([].slice.call(arguments))))();}"
+                "D.now=function(){return R.now()+off;};D.prototype=R.prototype;D.UTC=R.UTC;D.parse=R.parse;window.Date=D;})();</script>"
+                % (h, m))
+
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="tb-browser-test-")
         dw.LOG_PATH = os.path.join(self.dir, "watcher.log")
@@ -258,8 +280,8 @@ class BrowserCase(unittest.TestCase):
                 '<div class="item"><div class="time">%s</div><div><p class="task-title">試験</p>'
                 '<div class="chips"><span class="chip pending">未</span></div></div></div>%s'
                 '<!-- DECK:AUTO:START -->%s<!-- DECK:AUTO:END -->'
-                '<footer></footer></div><div id="toast-area"></div><script src="board.js"></script>%s'
-                % (today.month, today.day, date, time, rows, deck_key, extra))
+                '<footer></footer></div><div id="toast-area"></div>%s<script src="board.js"></script>%s'
+                % (today.month, today.day, date, time, rows, deck_key, self.clock_script(), extra))
         with open(self.board, "w", encoding="utf-8") as f:
             f.write(html)
 
@@ -278,7 +300,7 @@ class BrowserCase(unittest.TestCase):
         t = t.replace("<!-- DECK:AUTO:START -->", '<!-- DECK:AUTO:START --><span id="deck-key" hidden data-port="%d" data-k="%s"></span>'
                       % (self.port, TOKEN))
         with open(self.board, "w", encoding="utf-8") as f:
-            f.write(t + extra)
+            f.write(t + self.clock_script() + extra)    # board.js は head で defer に読むので、本文の終わりのこれが先に動く
 
     def open_page(self, path, budget=2500):
         """プロファイルを保ったままページを開き、読み込み後の DOM を返す。
@@ -1180,6 +1202,8 @@ class TestTimeUnavailable(TimeCase):
 
 class TestTimeAlarm(TimeCase):
     """応答の前に元の時刻で通知を出さない。応答の後に判定し直す。Deck が無ければ元の時刻で出す"""
+
+    PAGE_CLOCK = None    # 実際の時刻から1分前の時刻を作るので、板の時計も実際の時刻のまま
 
     def test_no_false_popup_before_response(self):
         t = minutes_ago(1)
@@ -3495,7 +3519,8 @@ class TestBrokenTimeKeys(BrowserCase):
 
     def test_time_field_foreign_matches_browser(self):
         """時刻の欄の中の svg・math の形（tests/test_board_edit.py の TIME_FOREIGN_CASES）を、ブラウザが同じく読む（v2.19 / board_edit.py v1.15）。
-        "close" はタイトルが欄の外で書式に包まれず、close-time（_time_close_at）が補った行と DOM が同じ。"reopen" はタイトルが書式に包まれる。
+        "close" はタイトルが欄の外で書式に包まれず、close-time（_time_close_at）が補った行と DOM が同じ。"reopen" はタイトルが書式に包まれ、
+        --confirmed の close-time（_time_close_at の reopen）が補った行では包まれない（閉じタグのある欄も＝v2.22 / board_edit.py v1.18）。
         "keep" はタイトルが欄の中に入る。1形を1ページで見る（補った行を先に置く。board.js は使わず、読み込み後の DOM を読む）。"""
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import test_board_edit as tbe
@@ -3518,6 +3543,10 @@ class TestBrokenTimeKeys(BrowserCase):
                     at = dw._time_close_at(tbe.time_foreign_row(inner, "後", *tag))
                     after = tbe.time_foreign_row(inner, "後", *tag)
                     rows.insert(0, after[:at[0]] + at[1] + after[at[0]:])
+                elif want == "reopen":
+                    at = dw._time_close_at(tbe.time_foreign_row(inner, "後", *tag), reopen=True)
+                    after = tbe.time_foreign_row(inner, "後", *tag)
+                    rows.insert(0, after[:at[0]] + at[1] + after[at[0]:])
                 with open(page, "w", encoding="utf-8") as f:
                     f.write('<html><head><meta charset="utf-8">%s</head><body>\n%s\n</body></html>' % (js, "\n".join(rows)))
                 o = json.loads(self.attr(self.open_page(page, budget=1000), "data-o"))
@@ -3525,6 +3554,74 @@ class TestBrokenTimeKeys(BrowserCase):
                 self.assertEqual(o["前"]["fmt"], want == "reopen")
                 if want == "close":
                     self.assertEqual(o["後"]["html"], o["前"]["html"])
+                elif want == "reopen":
+                    self.assertFalse(o["後"]["inside"])
+                    self.assertFalse(o["後"]["fmt"])
+
+    def test_formatting_reopen_short_keeps_title(self):
+        """開き直した書式の要素がタイトルの手前の閉じタグでまた閉じる行（tests/test_board_edit.py の TIME_REOPEN_SHORT_CASES の "text"・"empty"）は、
+        --confirmed の close-time（_time_close_at の reopen）で補ってもタイトル・チップの書式（祖先と子孫の HTML の書式の要素）が変わらない。
+        False の行は補うと変わる（タイトルが開き直した要素に包まれていた）。"empty" の行は、行の中の文字（HTML が詰める空白〔ASCII の空白・タブ・改行〕を除く。&nbsp; などは数える）のどれも書式が変わらない
+        （画面は何も変わらない）。"text" と False の行は、どれかの文字の書式が変わる。どれもタイトルは欄の外で、「ボードの点検」の⑥には数えない
+        （board.js の data-tb-unclosed も無い）。1形を1ページで見る（1ページに並べると、前の行の開き直しが次の行へ漏れる）。"""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import test_board_edit as tbe
+        fmt = " %s " % " ".join(sorted(dw._FORMATTING_TAGS))
+        js = ("<script>var X='http://www.w3.org/1999/xhtml',L='%s';function F(e){return e.namespaceURI===X&&L.indexOf(' '+e.localName+' ')>=0;}"
+              "function W(t){var o=[];for(var a=t;a;a=a.parentElement)if(F(a))o.push(a.localName);var d=t.getElementsByTagName('*');"
+              "for(var i=0;i<d.length;i++)if(F(d[i]))o.push('/'+d[i].localName);return o.join(',');}"
+              "document.addEventListener('DOMContentLoaded',function(){var it=document.querySelector('.item'),t=it.querySelector('.task-title'),"
+              "c=it.querySelector('.chip'),tm=it.querySelector('.time');var all=[],w=document.createTreeWalker(it,4),n;"
+              "while((n=w.nextNode()))if(n.nodeValue.replace(/[ \\t\\n\\r\\f]+/g,'')){var f=[];for(var a=n.parentElement;a&&a!==it.parentElement;a=a.parentElement)"
+              "if(F(a))f.push(a.localName);all.push(n.nodeValue.replace(/[ \\t\\n\\r\\f]+/g,'')+':'+f.join(','));}"
+              "document.documentElement.setAttribute('data-o',JSON.stringify("
+              "{inside:!!(tm&&tm.contains(t)),title:W(t),chip:W(c),all:all.join('|')}));});</script>" % fmt)
+        page = os.path.join(os.path.dirname(self.board), "short.html")
+
+        def look(row):
+            with open(page, "w", encoding="utf-8") as f:
+                f.write('<html><head><meta charset="utf-8">%s</head><body>\n%s\n</body></html>' % (js, row))
+            return json.loads(self.attr(self.open_page(page, budget=1000), "data-o"))
+
+        self.start_deck()
+        check = TestLaterDueAsk.SCRIPT % (
+            "setTimeout(function(){var c=document.getElementById('tb-board-check');"
+            "document.documentElement.setAttribute('data-check',c?c.textContent:'');"
+            "document.documentElement.setAttribute('data-n',document.querySelectorAll('.time[data-tb-unclosed]').length);},800);")
+        for inner, short in tbe.TIME_REOPEN_SHORT_CASES:
+            with self.subTest(inner=inner):
+                row = tbe.time_reopen_row(inner, "前")
+                at = dw._time_close_at(row, reopen=True)
+                fixed = row[:at[0]] + at[1] + row[at[0]:]
+                a, b = look(row), look(fixed)
+                self.assertFalse(a["inside"])
+                self.assertFalse(b["inside"])
+                self.assertEqual(a["title"] == b["title"] and a["chip"] == b["chip"], bool(short), (a, b))
+                self.assertEqual(a["all"] == b["all"], short == "empty", (a, b))
+                self.write_board(rows='\n<div class="section-label">今日中</div>\n' + row + "\n", extra=check)
+                dom = self.open_page(self.board, budget=3000)
+                self.assertEqual(self.attr(dom, "data-n"), "0")
+                self.assertNotIn("時刻の欄の閉じタグが無い", self.attr(dom, "data-check"))
+        # 見た目の比較: 欄とタイトルの間が空白だけの行（"empty"）では、補う前も後も、欄の外に下線・取り消し線を描く要素の矩形の幅が 0
+        # （板の board.css を読み、タイトルは板の標準の p）。対照の文字のある行（"text"）では、補う前は幅がある
+        vis = ("<script>window.addEventListener('load',function(){setTimeout(function(){var it=document.querySelector('.item'),"
+               "tm=it.querySelector('.time'),w=0;Array.prototype.forEach.call(it.querySelectorAll('*'),function(e){if(tm.contains(e))return;"
+               "var d=getComputedStyle(e).textDecorationLine;if(d&&d!=='none')Array.prototype.forEach.call(e.getClientRects(),"
+               "function(r){w+=r.width;});});document.documentElement.setAttribute('data-w',String(w));},0);});</script>")
+
+        def deco(row):
+            with open(page, "w", encoding="utf-8") as f:
+                f.write('<html><head><meta charset="utf-8"><link rel="stylesheet" href="board.css">%s</head><body>'
+                        '<div class="board"><div class="section-label">今日中</div>\n%s\n</div></body></html>' % (vis, row))
+            return float(self.attr(self.open_page(page, budget=1000), "data-w"))
+
+        for inner, want_drawn in (("<u>x</span> </u>", False), ("<s>x</span> </s>", False), ("<u>x</span>y</u>", True), ("<s>x</span>y</s>", True)):
+            with self.subTest(visual=inner):
+                row = tbe.time_reopen_row(inner, "前")
+                at = dw._time_close_at(row, reopen=True)
+                fixed = row[:at[0]] + at[1] + row[at[0]:]
+                self.assertEqual(deco(row) > 0, want_drawn, inner)
+                self.assertEqual(deco(fixed), 0.0, inner)
 
     def test_nested_same_name_time_fields(self):
         """時刻の欄の中に、中で閉じた同じ名前の要素がある行（v2.20 / board_edit.py v1.16）。欄の閉じタグはブラウザの読み方で決めるので（_time_match_close）、
@@ -3572,6 +3669,9 @@ class TestBrokenTimeKeys(BrowserCase):
                                    '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00 a", True))
         shapes.append(("中h2", '<div class="item"><div><h2 class="time">0:00</h1><p class="task-title">中h2</p>'
                                '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", False))
+        # 見出しの開きタグは、一番上の見出しを閉じる（欄はその手前で閉じ、タイトルは欄の外）。v2.22 / board_edit.py v1.18
+        shapes.append(("中h2h3", '<div class="item"><div><h2 class="time">0:00 <h3>a</h1><p class="task-title">中h2h3</p>'
+                                 '<div class="chips"><span class="chip pending">未</span></div></div></div>\n', "0:00", False))
         titles = [t for t, _r, _k, _u in shapes]
         self.write_board(rows='\n<div class="section-label">今日中</div>\n' + "".join(r for _t, r, _k, _u in shapes),
                          time="0:00", extra=TestLaterDueAsk.SCRIPT % (

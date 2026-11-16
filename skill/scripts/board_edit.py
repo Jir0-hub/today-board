@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""board_edit.py v1.17 — きょうのボード（board.html）を書き換える専用のスクリプト。
+"""board_edit.py v1.18 — きょうのボード（board.html）を書き換える専用のスクリプト。
 
 Claude は board.html を直接書かず、このスクリプトに操作を渡す。スクリプトが HTML を機械で書き換え、
 書く前に出来上がりの形を検査し（K1〜K9・K16・K17 に当たれば書かない・K11〜K15 は書いて警告する）、
@@ -78,6 +78,15 @@ create は置き換える前の板を history/board-<日付>-before-create-<時�
       （<div class="time">9:00 <table><tr><td>a</div> の </div> は欄を閉じない）。限界: 欄そのものが書式の要素の行の付け直し（adoption agency）はなぞらない。
       p の欄は、p を閉じる開きタグでもボタンの範囲の中でだけ閉じる（_time_range。<p class="time">9:00 <button>a</p><p class="task-title">… は
       タイトルも欄の中）。見出しの閉じタグは、範囲の中のどの見出しでも閉じる（<h2 class="time">9:00</h1> は欄を閉じる）
+      v1.18: 見出しの開きタグは、その時点で一番上にある見出しを閉じる（HTML の構文解析の in body の決まり。_tag_walk。<h2 class="time">9:00 <h3>a</h1> の
+      欄は <h3> の手前で閉じる＝K15 は「画面では正しく」の文、close-time はそこへ </h2> を補う。v1.17 までは h3 を h2 の中に積み、欄を閉じないと読んだ）。
+      閉じタグのある時刻の欄の中で書式の要素が閉じていない行（<span class="time">9:00 <b>x</span>…＝_time_closed_reopened。ブラウザは欄を閉じた後で
+      その要素を開き直し、後ろのタイトルやチップを包む）を、K15 の「書式の要素」の文で知らせ、close-time は --confirmed のときだけ欄の閉じタグの手前に
+      その要素の閉じタグを足し、set-time は断る（v1.17 までは欄が閉じたと読み、知らせずに set-time で書き換えた＝書式の要素の開きタグが消え、画面の書式が
+      変わった）。K15 のその文の書き出しを「時刻の欄の中で書式の要素（b・i など）が閉じていない項目があります」にした（閉じタグのある欄も出るため）。
+      開き直した書式の要素が、欄とタイトルの間の閉じタグでまた閉じる行（<span class="time">9:00 <b>x</span>y</b>…＝_time_reopen_short。閉じタグの
+      無い欄も）は、タイトルやチップの書式が変わらないので、K15 を別の文で出し、close-time・set-time の断りの文も分けた。さらに、欄とタイトルの
+      間に文字（空白・タブ・改行を除く。&nbsp; や全角空白は文字として数える）がある行（その文字の書式が外れる＝ユーザーに確かめる）と無い行（画面は何も変わらない）で文を分けた。Deck v2.22 と同じ写し
       Deck v2.21 と同じ写し
 使い方は `board_edit.py --help` と `board_edit.py <操作> --help`。
 
@@ -102,7 +111,7 @@ import urllib.parse
 from collections import Counter
 from datetime import date, datetime
 
-VERSION = "1.17"
+VERSION = "1.18"
 
 # ================================================================ Deck の写し（定数）
 
@@ -690,6 +699,69 @@ def _time_reopened(block, hit):
     return any(ns == "html" and name in _FORMATTING_TAGS for name, ns, _p, _b in inner)
 
 
+def _time_closed_reopened(block):
+    """閉じタグのある時刻の欄のうち、欄の閉じタグの手前で書式の要素（_FORMATTING_TAGS）が閉じていない最初のもの（開きタグの match か None。
+    v2.22 / board_edit.py v1.18）。<span class="time">9:00 <b>x</span><p class="task-title">… の </span> は欄を閉じ、b も一緒に閉じるが、
+    ブラウザは b を開き直して後ろのタイトルやチップを包む（_time_reopened と同じ画面。Chrome と Edge で確かめた＝tests/test_board_browser.py の
+    test_time_field_foreign_matches_browser）。K15 は _time_reopened の行と同じ文で知らせ、close-time は --confirmed のときだけ、欄の閉じタグの
+    手前に中で閉じていない要素の閉じタグを足す（_time_close_at）。欄そのものが書式の要素の行（<b class="time">）は含めない（書式の要素の付け替え
+    ＝限界）。中に table・object・script など・MathML・SVG のスコープの境界の要素がある欄（_time_keeps_open）も含めない。v2.21 / board_edit.py
+    v1.17 までは欄が閉じたと読み、知らせなかった。"""
+    bl = _blank_markup(block)
+    for m in _CLASS_TAG_RE.finditer(block):
+        if "time" not in m.group(2).split() or bl[m.start()] != "<" or m.group(1).lower() in _FORMATTING_TAGS:
+            continue
+        end = _time_match_close(block, m)
+        if end is None:
+            continue
+        inner = _time_inner_stack(block, m.end(), end)
+        if not _time_keeps_open(inner) and any(ns == "html" and name in _FORMATTING_TAGS for name, ns, _p, _b in inner):
+            return m
+    return None
+
+
+def _time_reopen_short(block):
+    """書式の要素を開き直す行（_time_reopened・_time_closed_reopened）のうち、開き直した書式の要素がすべて、欄の終わりから行の最初の
+    class を持つ開きタグ（_KEY_STOP_RE）までの間の閉じタグでまた閉じる行か（board_edit.py v1.18。K15 と close-time・set-time の断りの文を分ける）。
+    <span class="time">9:00 <b>x</span>y</b><p class="task-title">… では y だけが太字になり、<span class="time">9:00 <b>x</span></b>… では
+    </b> が開き直しを取り消す——どちらもタイトルやチップの書式は変わらない。その間の書式の要素の開きタグは、別の要素として数える
+    （<b>x</span><b>y</b> の </b> は後から開いた b を閉じるので、開き直した b はタイトルに届く。<b>x</span>y</b><i>z の i は開き直した要素では
+    ないので、タイトルを包んでも閉じタグを補っても変わらず、この判定には入れない）。その間にある書式の要素以外のタグは見ない（表の中など、書式の
+    要素の付け替えをなぞらない形は手書きでしか生まれない）。開き直す行でなければ False。
+    また閉じる行では、欄の終わりからその class を持つ開きタグまでの間に文字（タグとコメントを除いた中身のうち、HTML が詰める空白（ASCII の空白・タブ・改行）以外の文字。`&nbsp;`・全角空白などはブラウザが詰めずに描き、下線や取り消し線が見えるので文字として数える）があれば "text"
+    （その文字の書式が外れる＝ユーザーに確かめる）、無ければ "empty"（画面は何も変わらない）を返す。どちらも真として扱える。"""
+    hit = _time_open_unclosed(block)
+    if hit is not None:
+        if _time_screen_closed(block, hit) is not None or not _time_reopened(block, hit):
+            return False
+        m = hit[0]
+    else:
+        m = _time_closed_reopened(block)
+        if m is None:
+            return False
+    r = _time_range(block, m)
+    if r is None:
+        return False
+    act = [(name, True) for name, ns, _p, _b in _time_inner_stack(block, m.end(), r[1]) if ns == "html" and name in _FORMATTING_TAGS]
+    bl = _blank_markup(block)
+    s = _KEY_STOP_RE.search(bl, r[2])
+    stop = len(block) if s is None else s.start()
+    for t in _TAG_TOKEN_RE.finditer(bl, r[2], stop):
+        name = t.group(2).lower()
+        if name not in _FORMATTING_TAGS:
+            continue
+        if not t.group(1):
+            act.append((name, False))           # 後から開いた書式の要素（HTML では /> でも開きタグ）
+            continue
+        for k in range(len(act) - 1, -1, -1):  # 閉じタグは、同じ名前のうち一番後に開いたものを閉じる
+            if act[k][0] == name:
+                del act[k]
+                break
+    if any(orig for _name, orig in act):
+        return False
+    return "text" if re.sub(r"[ \t\n\r\f]+", "", html.unescape(_markup_free(block, bl, r[2], stop))) else "empty"
+
+
 def _time_inner_open(block, start, end):
     """start から end までに開いて、end でまだ閉じていない要素の名前（外側から順。v2.16 / board_edit.py v1.12。_time_close_at が足す閉じタグ）。
     数え方は _time_inner_stack（名前だけを返す）。"""
@@ -892,6 +964,12 @@ def _tag_walk_once(block, start, end=None, outer=None, p_closers=False, base=Non
             pop_to(idx["p"][-1])
             if base is not None and not stack:
                 return stack, -1 - t.start()    # 欄の p を、後ろの p を閉じる開きタグが閉じた（欄の閉じタグではない。位置は -1 - 開きタグの始まり）
+        if name in _HEADINGS and stack and stack[-1][1] == "html" and stack[-1][0] in _HEADINGS:
+            # 見出しの開きタグは、いま一番上にある見出しを閉じる（HTML の構文解析の in body の決まり。p を閉じた後に見る。
+            # <h2 class="time">9:00 <h3>a</h1> の欄は <h3> の手前で閉じる。v2.22 / board_edit.py v1.18）
+            pop_to(len(stack) - 1)
+            if base is not None and not stack:
+                return stack, -1 - t.start()    # 欄の見出しを、後ろの見出しの開きタグが閉じた（欄の閉じタグではない）
         if name not in _VOID_TAGS:
             push((name, "html", False, False))      # HTML の void でない要素の /> は開きタグ（ブラウザは / を読み捨てる。v2.20 / board_edit.py v1.16）
     return stack, None
@@ -913,10 +991,20 @@ def _time_close_at(block, reopen=False):
     欄そのものが書式の要素の行と、欄の中で table・object・script などが閉じていない行はこの扱いをせず、上の判定に戻る（_time_screen_closed が
     None）。欄の中に閉じていない書式の要素がある行（_time_reopened）は、reopen が真なら同じ位置に同じく補い（書式の要素の閉じタグも足すので、
     タイトルやチップを包んでいた書式が外れ、画面が変わる。board_edit.py の close-time --confirmed）、偽なら "format" を返す（Deck の日付の
-    切り替えは偽で呼び、補わずに欄を外す。外す範囲に書式の要素の開きタグが入るので、同じく書式が外れる）。"""
+    切り替えは偽で呼び、補わずに欄を外す。外す範囲に書式の要素の開きタグが入るので、同じく書式が外れる）。
+    閉じタグのある欄の中で書式の要素が閉じていない行（_time_closed_reopened・v2.22 / board_edit.py v1.18）も、reopen が偽なら "format"、
+    真なら欄の閉じタグの手前（空白を除く）に、中で閉じていない要素の閉じタグだけを足す（欄の閉じタグは足さない）。"""
     hit = _time_open_unclosed(block)
     if hit is None:
-        return "none"
+        m = _time_closed_reopened(block)
+        if m is None:
+            return "none"
+        if not reopen:
+            return "format"
+        # 欄の閉じタグはあるので、その手前（空白を除く）に、中で閉じていない要素の閉じタグだけを足す（v2.22 / board_edit.py v1.18）
+        end = _time_match_close(block, m)
+        pos = m.end() + len(block[m.end():end].rstrip())
+        return pos, "".join("</%s>" % name for name in reversed(_time_inner_open(block, m.end(), pos)))
     m, stop = hit
     tag = m.group(1)
     shown = _time_screen_closed(block, hit)
@@ -969,6 +1057,16 @@ def block_close_time(blines, confirmed=False):
         # 時刻の文字の後ろ、class を持つタグより前に文字がある（<b>am</b> など）。補うと欄の外へ出て鍵が変わるので断る
         raise OpError("この項目の時刻の欄には、時刻の文字の後ろにタグで囲んだ文字があり、閉じタグを足す位置を決められません。何も書いていません。"
                       "SKILL.md「ボードの点検」の①の直し方（restore）で直してください。")
+    short = _time_reopen_short(block) if at == "format" else False
+    if short == "empty":
+        raise OpError("この項目の時刻の欄の中に閉じていない書式の要素（b・i など）があり、ブラウザは時刻の欄を閉じた後でその要素を開き直しますが、"
+                      "タイトルの手前の閉じタグでまた閉じ、その間に文字が無いので、閉じタグを補っても画面は変わりません（タスクの文言・状態・行の鍵も変わりません）。"
+                      "何も書いていません。--confirmed を付けてもう一度呼んでください。")
+    if short == "text":
+        raise OpError("この項目の時刻の欄の中に閉じていない書式の要素（b・i など）があり、ブラウザは時刻の欄を閉じた後でその要素を開き直しますが、"
+                      "タイトルの手前の閉じタグでまた閉じます。閉じタグを補うと、欄とタイトルの間の文字の書式が外れます"
+                      "（タイトル・チップの書式、タスクの文言・状態・行の鍵は変わりません）。何も書いていません。"
+                      "板のその行をユーザーに見せ、欄とタイトルの間の文字の書式が外れてよいと確かめてから、--confirmed を付けてもう一度呼んでください。")
     if at == "format":
         raise OpError("この項目の時刻の欄の中に閉じていない書式の要素（b・i など）があり、ブラウザは時刻の欄を閉じた後でその要素を開き直して、"
                       "後ろのタイトルやチップをその書式で表示しています。閉じタグを補うとその書式が外れ、画面が変わります（タスクの文言・状態・行の鍵は変わりません）。"
@@ -1046,7 +1144,7 @@ def _time_range(block, m):
     """時刻の欄（開きタグの match＝m。group(1) がタグ名）の、ブラウザが欄とみなす範囲（v2.15 / board_edit.py v1.11）。
     (中身の始まり, 中身の終わり, 要素の終わり) か、決まらなければ None。
 
-    要素の終わりは、同じタグ名の開きと閉じを数えて決める（入れ子に強い）。閉じタグが見つからない要素は、ブラウザが閉じる所
+    要素の終わりは、欄を閉じる閉じタグ（ブラウザの読み方で決める＝_time_match_close。v2.21 / board_edit.py v1.17。v2.20 / v1.16 は同じタグ名の開きと閉じを数えて決めた）。閉じタグが見つからない要素は、ブラウザが閉じる所
     （外側の要素の閉じタグの手前＝_implied_close）まで。欄が p なら、その前に p を閉じる要素（div・li など＝_P_CLOSERS）が始まればその手前まで
     （ブラウザは p をそこで閉じる。互換モードの板に合わせた集合で、標準モードの板の table だけは違う＝_P_CLOSERS の前の注釈）。項目の閉じタグは項目の中にあるので、閉じタグの無い欄でもふつうは決まる。"""
     tag = m.group(1)
@@ -1056,11 +1154,12 @@ def _time_range(block, m):
         end = inner_end = _implied_close(block, m.end(), _open_stack(block, m.start()))
         if end is None:
             return None
-    if tag.lower() == "p":
+    if tag.lower() == "p" or tag.lower() in _HEADINGS:
         # 欄の p を、後ろの p を閉じる開きタグ（_P_CLOSERS）が閉じるか。ブラウザと同じく、欄の p がボタンの範囲の中にあるときだけ閉じる
         # （間に開いたままの button・範囲の境界〔table など〕があれば閉じない＝<p class="time">9:00 <button>a</p><p class="task-title">… は
-        # タイトルも欄の中に入る。_tag_walk の base。v2.21 / board_edit.py v1.17。v2.20 / v1.16 までは範囲を見ずに最初の開きタグで閉じた）
-        pos = _tag_walk(block, m.start(), inner_end, p_closers=True, base="p")[1]
+        # タイトルも欄の中に入る。_tag_walk の base。v2.21 / board_edit.py v1.17。v2.20 / v1.16 までは範囲を見ずに最初の開きタグで閉じた）。
+        # 欄が見出しなら、後ろの見出しの開きタグが、欄が一番上にあるときに閉じる（v2.22 / board_edit.py v1.18）
+        pos = _tag_walk(block, m.start(), inner_end, p_closers=True, base=tag.lower())[1]
         if pos is not None and pos < 0:
             end = inner_end = -1 - pos
     return m.end(), inner_end, end
@@ -1085,7 +1184,7 @@ _ROW_PART_RE = re.compile(r'<\w+\b[^>]*?\sclass\s*=\s*["\']?(?:[^"\'>]*\s)?(?:ta
 def _remove_time_elements(block):
     """class に time を持つ要素を、対応する閉じタグまで丸ごと外す。(外した後の文字列, 外した数) を返す。
 
-    要素の範囲は _time_range（同じタグ名の開きと閉じを数えて決め、閉じタグが見つからない要素は、ブラウザが閉じる所＝外側の要素の閉じタグの
+    要素の範囲は _time_range（欄を閉じる閉じタグはブラウザの読み方で決め＝_time_match_close、閉じタグが見つからない要素は、ブラウザが閉じる所＝外側の要素の閉じタグの
     手前まで。v2.14 / board_edit.py v1.10。board.js の画面と同じ欄になる。v2.13 までは外さずに数えなかった）。範囲が決まらない要素は外さずに
     数えない（項目の閉じタグは項目の中にあるので、ふつうは起きない。起きれば外した数が1にならず切り替えを止める）。
     要素の中に行の部品（タイトル・補足・チップの箱・チップ・項目＝_ROW_PART_RE）があるときも外さずに数えない
@@ -2238,8 +2337,8 @@ def block_set_crit(blines, nl, on):
 
 
 def _replace_element_inner(block, cls, new_inner):
-    """class に cls を持つ最初の要素の中身を置き換える。要素が無ければ None。時刻の欄（cls が "time"）は、同じ名前の開きと閉じを数えて
-    欄を閉じる閉じタグまでを中身とする（_time_match_close・v1.16。v1.15 までは同じ名前の最初の閉じタグまでで、
+    """class に cls を持つ最初の要素の中身を置き換える。要素が無ければ None。時刻の欄（cls が "time"）は、欄を閉じる閉じタグまでを中身とする
+    （_time_match_close。v1.16 は同じ名前の開きと閉じを数えて決め、v1.17 からはブラウザの読み方で決める。v1.15 までは同じ名前の最初の閉じタグまでで、
     <span class="time"><span>9</span>:00</span> の set-time は「:00」と閉じタグを後ろに残した）。ほかは同じ名前の最初の閉じタグまで。"""
     for m in _CLASS_TAG_RE.finditer(block):
         if cls in m.group(2).split():
@@ -2306,6 +2405,22 @@ def block_set_time(blines, nl, value):
         # 閉じタグの無い欄を書き換えると、後ろのタイトルとチップまで消える。ブラウザが欄の中に入れた行でも、手前で閉じる行でも同じ（v1.10）
         raise OpError("この項目の時刻の欄には閉じタグが無いため、時刻を書き換えられません。何も書いていません。"
                       "先に close-time --item <項目> で閉じタグを補ってください（警告 K15）。")
+    if _time_closed_reopened(block) is not None:
+        # 欄の中で閉じていない書式の要素ごと書き換えると、ブラウザが開き直していた書式が外れ、画面が変わる（v1.18）
+        short = _time_reopen_short(block)
+        if short == "empty":
+            raise OpError("この項目の時刻の欄の中に閉じていない書式の要素（b・i など）があり、ブラウザは時刻の欄を閉じた後でその要素を開き直します"
+                          "（タイトルの手前の閉じタグでまた閉じ、その間に文字はありません）。このまま書き換えると、欄の中の書式の要素の開きタグが消え、"
+                          "対になる閉じタグだけが欄の後ろに残るため、書き換えません。何も書いていません。"
+                          "close-time --item <項目> --confirmed で閉じタグを補い（画面は変わりません）、もう一度 set-time を呼んでください（警告 K15）。")
+        if short == "text":
+            raise OpError("この項目の時刻の欄の中に閉じていない書式の要素（b・i など）があり、ブラウザは時刻の欄を閉じた後でその要素を開き直します"
+                          "（タイトルの手前の閉じタグでまた閉じます）。時刻を書き換えると、欄とタイトルの間の文字の書式が外れるため、書き換えません。"
+                          "何も書いていません。板のその行をユーザーに見せ、欄とタイトルの間の文字の書式が外れてよいと確かめてから、"
+                          "close-time --item <項目> --confirmed で閉じタグを補い、もう一度 set-time を呼んでください（警告 K15）。")
+        raise OpError("この項目の時刻の欄の中に閉じていない書式の要素（b・i など）があり、ブラウザは時刻の欄を閉じた後でその要素を開き直して、"
+                      "後ろのタイトルやチップをその書式で表示しています。時刻を書き換えるとその書式が外れ、画面が変わるため、書き換えません。何も書いていません。"
+                      "板のその行をユーザーに見せ、書式が外れてよいと確かめてから、close-time --item <項目> --confirmed で閉じタグを補い、もう一度 set-time を呼んでください（警告 K15）。")
     n_time = len(list(_TIME_OPEN_RE.finditer(block)))
     if n_time > 1:
         raise OpError("この項目には時刻の欄が %d 個あるため、時刻を書き換えられません。何も書いていません。" % n_time)
@@ -2539,17 +2654,22 @@ def warnings_for(text):
     sw = _swallow_open(text)
     sw_line = text.count("\n", 0, sw[0]) if sw else -1
     unclosed, shown, reopened = [], [], []
+    short = {"text": [], "empty": []}       # タイトルの手前でまた閉じる行（_time_reopen_short）。間に文字がある行と無い行
     for it in items:
         if it["s"] <= sw_line <= it["e"]:
             continue
         b = "".join(lines[it["s"]:it["e"] + 1])
         hit = _time_open_unclosed(b)
         if hit is None:
+            if _time_closed_reopened(b) is not None:      # 閉じタグはあるが、中で書式の要素が閉じていない（v1.18）
+                kind = _time_reopen_short(b)
+                (short[kind] if kind else reopened).append(_item_key(b))
             continue
         if _time_screen_closed(b, hit) is not None:
             shown.append(_item_key(b))
         elif _time_reopened(b, hit):
-            reopened.append(_item_key(b))
+            kind = _time_reopen_short(b)        # タイトルの手前でまた閉じる行は別の文（v1.18）
+            (short[kind] if kind else reopened).append(_item_key(b))
         else:
             unclosed.append(_item_key(b))
     if unclosed:
@@ -2563,11 +2683,24 @@ def warnings_for(text):
                       "（書き換えると、後ろのタイトルやチップまで消えるため）。時刻を書き換える前か、ユーザーに「ボードを直して」と頼まれたら、"
                       "close-time --item <項目> で閉じタグを補ってください（画面・タスクの文言・状態は変わりません）。" % "、".join(shown)})
     if reopened:
-        warns.append({"code": "K15", "message": "時刻の欄の閉じタグが無い項目があります（%s）。時刻の欄の中に閉じていない書式の要素（b・i など）があり、"
+        warns.append({"code": "K15", "message": "時刻の欄の中で書式の要素（b・i など）が閉じていない項目があります（%s）。"
                       "ブラウザは時刻の欄を閉じた後でその要素を開き直すので、画面では後ろのタイトルやチップがその書式で表示されます（「ボードの点検」の⑥には出ません）。"
                       "set-time では時刻を書き換えられません。ユーザーに「ボードを直して」と頼まれたら、板のその行をユーザーに見せ、"
                       "タイトルやチップの書式が外れてよいかを確かめてから、close-time --item <項目> --confirmed で閉じタグを補ってください"
                       "（画面の書式は外れますが、タスクの文言・状態・行の鍵は変わりません）。" % "、".join(reopened)})
+    if short["text"]:
+        warns.append({"code": "K15", "message": "時刻の欄の中で書式の要素（b・i など）が閉じていない項目があります（%s）。ブラウザは時刻の欄を閉じた後でその要素を開き直しますが、"
+                      "タイトルの手前の閉じタグでまた閉じるので、その書式になるのは欄とタイトルの間の文字だけで、タイトルやチップの書式は変わりません"
+                      "（「ボードの点検」の⑥には出ません）。set-time では時刻を書き換えられません。ユーザーに「ボードを直して」と頼まれたら、"
+                      "板のその行をユーザーに見せ、欄とタイトルの間の文字の書式が外れてよいかを確かめてから、"
+                      "close-time --item <項目> --confirmed で閉じタグを補ってください（タイトル・チップの書式、タスクの文言・状態・行の鍵は変わりません）。"
+                      % "、".join(short["text"])})
+    if short["empty"]:
+        warns.append({"code": "K15", "message": "時刻の欄の中で書式の要素（b・i など）が閉じていない項目があります（%s）。ブラウザは時刻の欄を閉じた後でその要素を開き直しますが、"
+                      "タイトルの手前の閉じタグでまた閉じ、その間に文字が無いので、画面は何も変わりません（「ボードの点検」の⑥には出ません）。"
+                      "set-time では時刻を書き換えられません。ユーザーに「ボードを直して」と頼まれたら、"
+                      "close-time --item <項目> --confirmed で閉じタグを補ってください（画面・タスクの文言・状態・行の鍵は変わりません）。"
+                      % "、".join(short["empty"])})
     mism = later_time_mismatches(lines, items)
     if mism:
         warns.append({"code": "K14", "message": "「明日以降」に、時刻の欄が実施日の時刻と違う行があります（%s）。"

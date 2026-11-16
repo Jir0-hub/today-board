@@ -775,7 +775,7 @@ class TestImportantTasks(Sandbox):
 
 # 時刻の欄の中の svg・math の形と、ブラウザの読み方（v2.19 / board_edit.py v1.15。Chrome・Edge で確かめる＝tests/test_board_browser.py の
 # test_time_field_foreign_matches_browser）。"close"＝ブラウザが外側の閉じタグで欄を閉じ、タイトルは欄の外（_time_screen_closed）、
-# "reopen"＝閉じた後で書式の要素を開き直す（_time_reopened）、"keep"＝欄を閉じず、タイトルが欄の中に入る（_time_keeps_open）
+# "reopen"＝閉じた後で書式の要素を開き直す（_time_reopened。閉じタグのある欄は _time_closed_reopened）、"keep"＝欄を閉じず、タイトルが欄の中に入る（_time_keeps_open）
 TIME_FOREIGN_CASES = [
     ("<svg><span><desc>", "close"),          # span が svg を閉じ、desc は HTML の要素
     ("<math><span><mi>", "close"),
@@ -805,7 +805,43 @@ TIME_FOREIGN_CASES = [
     # 欄が p で、中に開いたままの button がある。</p> は欄を閉じず、外側の </div> で閉じる（ボタンの範囲）。table の td なら </div> も届かない
     ("<button>a</p>", "close", "p"),
     ("<table><tr><td>a</p>", "keep", "p"),
+    # 欄が見出しで、中に別の見出しの開きタグがある。見出しの開きタグは一番上の見出しを閉じるので、欄はその手前で閉じる（v2.22 / board_edit.py v1.18）。
+    # 間に span などがあると h3 では閉じず、外側の </div> で閉じる
+    ("<h3>a</h1>", "close", "h2"),
+    ("<span><h3>a</h3>", "close", "h2"),
+    # 欄の閉じタグの手前で書式の要素が閉じていない。</span> は欄を閉じるが、ブラウザは書式の要素を開き直してタイトルを包む（v2.22 / board_edit.py v1.18）
+    ("<b>x</span>", "reopen"),
+    ('<a href="#">x</span>', "reopen"),
+    ("<code>a</span>", "reopen"),
 ]
+
+
+# 書式の要素を開き直す行で、開き直した要素がタイトルの手前の閉じタグでまた閉じるか（_time_reopen_short・board_edit.py v1.18）。
+# "text"・"empty"＝また閉じる（タイトルやチップの書式は変わらない）。"text" は欄とタイトルの間に文字（空白・タブ・改行を除く。&nbsp; や全角空白は文字として数える）があり、その文字の書式が
+# 外れる。"empty" は文字が無く、画面は何も変わらない。False＝タイトルに届く。
+# ブラウザで確かめる＝tests/test_board_browser.py の test_formatting_reopen_short_keeps_title
+TIME_REOPEN_SHORT_CASES = [
+    ("<b>x</span>", False),
+    ("<b>x</span>y</b>", "text"),            # y だけが太字
+    ("<b>x</span></b>", "empty"),            # </b> が開き直しを取り消す
+    ("<b>x</span> </b>", "empty"),           # 空白だけ
+    ("<b>x</span><!-- y --></b>", "empty"),  # コメントは文字ではない
+    ("<u>x</span>&nbsp;</u>", "text"),       # &nbsp; はブラウザが詰めずに描き、下線が見える
+    ("<u>x</span>&#x3000;</u>", "text"),     # 全角空白も同じ
+    ("<b>x</span><b>y</b>", False),          # </b> は後から開いた b を閉じる
+    ("<b>x</span>y</b><i>z", "text"),        # i は開き直した要素ではない（補っても変わらない）
+    ("<b>x <i>y</span>z</i>", False),        # b はタイトルに届く
+    ("<b>x <i>y</span>z</i></b>", "text"),
+    ("<b>am</div>y</b>", "text"),            # 閉じタグの無い欄（_time_reopened）
+    ("<b>am</div></b>", "empty"),
+    ("<b>am</div>", False),
+]
+
+
+def time_reopen_row(inner, title="T"):
+    # inner が </div> を含む形（閉じタグの無い欄）は、その </div> が行の内側の div を閉じるので、行の終わりの </div> を1つ減らす
+    return ('<div class="item"><div><span class="time">9:00 %s<p class="task-title">%s</p>'
+            '<div class="chips"><span class="chip pending">未</span></div></div>%s' % (inner, title, "" if "</div>" in inner else "</div>"))
 
 
 def time_foreign_row(inner, title="T", tag="span"):
@@ -821,7 +857,7 @@ COPIED = ["_blank_comments", "_canon_section", "_scan_board", "_element_text", "
           "_div_balance", "hand_fingerprint", "parse_due_value", "_item_open_attr", "_item_due_pending", "_mark_due_moved",
           "_insert_status_chip", "_due_moved_shape", "_item_due_shapeable", "_valid_hm", "_later_due_shape",
           "_time_open_unclosed", "_time_screen_closed", "_time_close_at", "_implied_close",
-          "_open_stack", "_time_range", "_time_text", "_time_reopened", "_time_inner_open", "_time_keeps_open", "_time_inner_stack", "_tag_walk", "_tag_walk_once", "_time_match_close", "_blank_markup", "_markup_free",
+          "_open_stack", "_time_range", "_time_text", "_time_reopened", "_time_closed_reopened", "_time_inner_open", "_time_keeps_open", "_time_inner_stack", "_tag_walk", "_tag_walk_once", "_time_match_close", "_blank_markup", "_markup_free",
           "_sw_tag_end", "_sw_text_end", "_sw_is_board_js", "_sw_runs", "_sw_src_board_js", "_sw_board_js_in", "_sw_lost", "_swallow_open", "_sw_scan", "swallow_text", "migrate_board_js"]
 COPIED_CONSTS = ["MARKER_START", "MARKER_END", "MOVABLE_SECTIONS", "CANON_SECTIONS", "WEEKDAY_JA", "_SECTION_LABEL_RE",
                  "_CLASS_TAG_RE", "_STRIP_TAGS_RE", "_CHIP_TOKEN_RE", "_CHIP_DONE_RE", "_ITEM_CLASS_RE",
@@ -1757,7 +1793,7 @@ class TestBrokenTimeKey(Sandbox):
             self.assertEqual(dw._item_key(row), old)
             self.assertFalse(be._time_unclosed(row))
         # class の無い同じ名前の子が先に閉じる欄も、中に class を持つ要素があれば K15 に当たる（board.js の⑥も数える）。欄の閉じタグは
-        # 入れ子を数えて決めるので、鍵の時刻は「9:00」（v2.20 / board_edit.py v1.16。v1.15 までは K15 に当たらず、鍵は「9」）
+        # ブラウザの読み方で決める（_time_match_close）ので、鍵の時刻は「9:00」（v2.20 / board_edit.py v1.16。v1.15 までは K15 に当たらず、鍵は「9」）
         row = '<div class="item"><span class="time"><span>9</span>:00 <span class="x">a</span></span><div><p class="task-title">T</p></div></div>'
         self.assertTrue(be._time_unclosed(row))
         self.assertEqual(be._item_key(row), "9:00|T")
@@ -1986,6 +2022,92 @@ class TestBrokenTimeKey(Sandbox):
         self.assertIn('<b class="time">9:00</b></div><p class="task-title">欄が書式</p>', self.text())
         self.assertEqual([i["key"] for i in self.items()], keys)
 
+    def test_reopen_short_k15(self):
+        """開き直した書式の要素がタイトルの手前の閉じタグでまた閉じる行（_time_reopen_short・v1.18）は、K15 を別の文（タイトルやチップの書式は
+        変わらない）で出し、close-time・set-time の断りの文も分ける。欄とタイトルの間に文字がある行（"text"）は行をユーザーに見せて確かめる文、
+        無い行（"empty"）は画面が変わらない文。--confirmed の close-time は同じく補い、K15 は消え、行の鍵は変わらない。"""
+        for inner, short in TIME_REOPEN_SHORT_CASES:
+            with self.subTest(inner=inner):
+                r = time_reopen_row(inner)
+                self.assertEqual(be._time_reopen_short(r), short)
+                self.assertEqual(be._time_close_at(r), "format")
+        self.assertFalse(be._time_reopen_short(time_foreign_row("<svg>")))        # 開き直す行でない
+        rows = [time_reopen_row("<b>x</span>y</b>", "閉じた欄"), time_reopen_row("<b>am</div>y</b>", "閉じない欄"),
+                time_reopen_row("<b>x</span></b>", "文字なし"), time_reopen_row("<b>x</span>", "届く")]
+        self.create()
+        self.put_rows(rows)
+        k15 = [w["message"] for w in self.status()["warnings"] if w["code"] == "K15"]
+        self.assertEqual(len(k15), 3, k15)
+        text = [m for m in k15 if "その書式になるのは欄とタイトルの間の文字だけ" in m]
+        empty = [m for m in k15 if "その間に文字が無いので、画面は何も変わりません" in m]
+        self.assertEqual((len(text), len(empty)), (1, 1), k15)
+        self.assertIn("9:00 x|閉じた欄", text[0])
+        self.assertIn("9:00 am|閉じない欄", text[0])
+        self.assertNotIn("文字なし", text[0])
+        self.assertIn("9:00 x|文字なし", empty[0])
+        self.assertNotIn("閉じた欄", empty[0])
+        for m in text + empty:
+            self.assertNotIn("届く", m)
+            self.assertIn("close-time --item <項目> --confirmed", m)
+        self.assertIn("板のその行をユーザーに見せ", text[0])
+        self.assertNotIn("ユーザーに見せ", empty[0])
+        before = self.read()
+        for item, shown in (("9:00 x|閉じた欄", True), ("9:00 x|文字なし", False)):
+            for args in (("close-time", "--item", item), ("set-time", "--item", item, "--time", "11:00")):
+                with self.subTest(args=args):
+                    rc, out = self.ed(*args)
+                    self.assertNotEqual(rc, 0)
+                    self.assertIn("タイトルの手前の閉じタグでまた閉じ", out["error"])
+                    self.assertEqual("ユーザーに見せ" in out["error"], shown, out["error"])
+        rc, out = self.ed("close-time", "--item", "9:00 x|届く")
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("タイトルの手前の閉じタグ", out["error"])
+        self.assertUnchanged(before)
+        keys = [i["key"] for i in self.items()]
+        for item in ("9:00 x|閉じた欄", "9:00 am|閉じない欄", "9:00 x|文字なし"):
+            rc, out = self.ed("close-time", "--item", item, "--confirmed")
+            self.assertEqual(rc, 0, out)
+        self.assertEqual([i["key"] for i in self.items()], keys)
+        k15 = [w["message"] for w in self.status()["warnings"] if w["code"] == "K15"]
+        self.assertEqual(len(k15), 1, k15)
+        self.assertNotIn("タイトルの手前の閉じタグでまた閉じ", k15[0])
+
+    def test_closed_time_field_with_open_formatting(self):
+        """閉じタグのある時刻の欄の中で書式の要素が閉じていない行（<span class="time">9:00 <b>x</span>…＝_time_closed_reopened・v1.18）。
+        ブラウザは欄を閉じた後でその要素を開き直すので、K15 は書式の要素の文で知らせ、set-time と --confirmed なしの close-time は断る。
+        --confirmed の close-time は欄の閉じタグの手前に書式の要素の閉じタグだけを足し、行の鍵は変わらない。閉じた書式の要素の行は知らせない。"""
+        rows = ['<div class="item"><div><span class="time">9:00 <b>x</span><p class="task-title">閉じた欄の書式</p>'
+                '<div class="chips"><span class="chip pending">未</span></div></div></div>',
+                '<div class="item"><div><span class="time">10:00 <b>x</b></span><p class="task-title">閉じた書式</p>'
+                '<div class="chips"><span class="chip pending">未</span></div></div></div>']
+        self.create()
+        self.put_rows(rows)
+        k15 = [w["message"] for w in self.status()["warnings"] if w["code"] == "K15"]
+        self.assertEqual(len(k15), 1, k15)
+        self.assertIn("9:00 x|閉じた欄の書式", k15[0])
+        self.assertNotIn("閉じた書式", k15[0].replace("閉じた欄の書式", ""))
+        self.assertTrue(k15[0].startswith("時刻の欄の中で書式の要素（b・i など）が閉じていない項目があります"))
+        self.assertIn("close-time --item <項目> --confirmed", k15[0])
+        before = self.read()
+        rc, out = self.ed("set-time", "--item", "9:00 x|閉じた欄の書式", "--time", "11:00")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--confirmed", out["error"])
+        self.assertUnchanged(before)
+        rc, out = self.ed("close-time", "--item", "9:00 x|閉じた欄の書式")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--confirmed", out["error"])
+        self.assertUnchanged(before)
+        keys = [i["key"] for i in self.items()]
+        rc, out = self.ed("close-time", "--item", "9:00 x|閉じた欄の書式", "--confirmed")
+        self.assertEqual(rc, 0, out)
+        self.assertIn('<span class="time">9:00 <b>x</b></span><p class="task-title">閉じた欄の書式</p>', self.text())
+        self.assertEqual([i["key"] for i in self.items()], keys)
+        self.assertEqual([w for w in self.status()["warnings"] if w["code"] == "K15"], [])
+        rc, out = self.ed("close-time", "--item", "10:00 x|閉じた書式")
+        self.assertNotEqual(rc, 0)          # 直すものが無い
+        rc, out = self.ed("set-time", "--item", "10:00 x|閉じた書式", "--time", "11:00")
+        self.assertEqual(rc, 0, out)
+
     def test_keep_open_tags_not_screen_closed(self):
         """欄の中で table・object・script など（_KEEP_OPEN_TAGS）が閉じていない行は、ブラウザが外側の閉じタグで欄を閉じず、タイトルやチップが
         欄に入るか文字として読まれるので、「画面では正しく」の側に入れない（_time_screen_closed は None・_time_reopened は偽＝K15 は取り込む形の行と
@@ -2039,14 +2161,19 @@ class TestBrokenTimeKey(Sandbox):
     def test_time_field_foreign(self):
         """時刻の欄の中の svg・math を、ブラウザと同じ決まりで読む（_tag_walk・v2.19 / board_edit.py v1.15。TIME_FOREIGN_CASES）。
         抜ける HTML のタグの後ろの mi・desc と、svg の中の textarea・style は数えない（v1.14 までは数えた）。境界の中の HTML から書いた </svg> は
-        読み飛ばす（v1.14 までは閉じた）。"close" の形は close-time が補え、Deck と同じ結果を返す。"""
+        読み飛ばす（v1.14 までは閉じた）。"close" の形は close-time が補え、Deck と同じ結果を返す。"reopen" の形は --confirmed のときだけ補え、
+        補った行は K15 に当たらず、行の鍵も変わらない（閉じタグのある欄も＝_time_closed_reopened・v1.18）。"""
         for inner, want, *tag in TIME_FOREIGN_CASES:
             with self.subTest(inner=inner):
                 r = time_foreign_row(inner, "T", *tag)
                 hit = be._time_open_unclosed(r)
-                got = ("close" if be._time_screen_closed(r, hit) is not None else
-                       "reopen" if be._time_reopened(r, hit) else "keep")
+                if hit is None:
+                    got = "reopen" if be._time_closed_reopened(r) is not None else "closed"
+                else:
+                    got = ("close" if be._time_screen_closed(r, hit) is not None else
+                           "reopen" if be._time_reopened(r, hit) else "keep")
                 self.assertEqual(got, want)
+                self.assertEqual(be._time_closed_reopened(r) is None, dw._time_closed_reopened(r) is None)
                 self.assertEqual(be._time_close_at(r, reopen=True), dw._time_close_at(r, reopen=True))
                 at = be._time_close_at(r)
                 if want == "close":
@@ -2056,6 +2183,11 @@ class TestBrokenTimeKey(Sandbox):
                     self.assertEqual(be._item_key(fixed), be._item_key(r))
                 elif want == "reopen":
                     self.assertEqual(at, "format")
+                    at = be._time_close_at(r, reopen=True)
+                    fixed = r[:at[0]] + at[1] + r[at[0]:]
+                    self.assertIsNone(be._time_open_unclosed(fixed))
+                    self.assertIsNone(be._time_closed_reopened(fixed))
+                    self.assertEqual(be._item_key(fixed), be._item_key(r))
                 else:
                     self.assertNotIsInstance(at, tuple)
         # 境界の中では、外側の閉じタグで欄を閉じない（_implied_close）

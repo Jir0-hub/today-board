@@ -265,7 +265,16 @@ class TestMakeHooks(Sandbox):
     def test_shape(self):
         events = HOOKS["hooks"]
         self.assertEqual(sorted(events), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart",
-                                          "UserPromptSubmit"])
+                                          "Stop", "UserPromptSubmit"])
+        # project_board.py（作業フォルダのプロジェクトの行・tests/test_project_board.py）の登録は
+        # UserPromptSubmit の2つ目と Stop。guard.py の登録は従来どおり UserPromptSubmit の1つ目
+        pb_tail = "${CLAUDE_PLUGIN_ROOT}/hooks/project_board.py"
+        self.assertEqual([g["hooks"][0]["args"][-1] for g in events["UserPromptSubmit"]],
+                         ["${CLAUDE_PLUGIN_ROOT}/hooks/guard.py", pb_tail])
+        self.assertEqual([g["hooks"][0]["args"][-1] for g in events["Stop"]], [pb_tail])
+        events = {ev: [g for g in groups if g["hooks"][0]["args"][-1] != pb_tail]
+                  for ev, groups in events.items()}
+        events = {ev: groups for ev, groups in events.items() if groups}
         self.assertEqual([g["matcher"] for g in events["PreToolUse"]],
                          ["Write|Edit|MultiEdit|NotebookEdit", "Bash|PowerShell"])
         for g in events["PostToolUse"] + events["PostToolUseFailure"]:

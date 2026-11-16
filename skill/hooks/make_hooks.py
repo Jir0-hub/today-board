@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""make_hooks.py v1.0 — hooks.template.json から hooks.json を作る（きょうのボードの保護のフック）。
+"""make_hooks.py v1.0 — hooks.template.json から hooks.json を作る（きょうのボードの保護のフック〔guard.py〕と、
+作業フォルダのプロジェクトの行を見せて更新し忘れを止めるフック〔project_board.py〕）。
 
 使い方: python make_hooks.py --python <Python 3 の実行ファイルの絶対パス> [--template <雛形>] [--out <書き出し先>]
   既定の雛形・書き出し先は、このファイルと同じフォルダの hooks.template.json・hooks.json。
@@ -10,9 +11,10 @@ JSON は Python が作る（PowerShell の ConvertTo-Json は使わない）。�
 os.replace で置き換える（書きかけの hooks.json を、その時に始まったセッションが読まないため）。
 書けたら、command と各フックの args の要素数を標準出力に出す。失敗は終了コード 1 と理由（標準エラー）。
 
-小片（BOOT）の正本はこのファイル。exec 形式で `<python> -I -c <BOOT> <プラグインのフォルダ>/hooks/guard.py` と起動され、
-guard.py があれば runpy で走らせ、無い・構文エラー・例外・sys.exit(2) のどれでも何も出さずに終了コード 0 で抜ける
-（PreToolUse の終了コード 2 は「止める」合図で、guard.py が消えている間に全ツールが止まるのを防ぐため）。
+小片（BOOT）の正本はこのファイル。exec 形式で `<python> -I -c <BOOT> <プラグインのフォルダ>/hooks/<スクリプト>` と起動され
+（スクリプトは雛形の args の末尾が指す guard.py か project_board.py）、そのスクリプトがあれば runpy で走らせ、無い・構文エラー・
+例外・sys.exit(2) のどれでも何も出さずに終了コード 0 で抜ける（PreToolUse の終了コード 2 は「止める」合図で、スクリプトが
+消えている間に全ツールが止まるのを防ぐため。Stop を止めるときは、終了コードではなく標準出力の JSON で止める）。
 Python 3 標準ライブラリのみ。
 """
 

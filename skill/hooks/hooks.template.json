@@ -35,6 +35,18 @@
         "hooks": [
           {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"], "timeout": 30}
         ]
+      },
+      {
+        "hooks": [
+          {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/project_board.py"], "timeout": 15}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "@PYTHON@", "args": ["-I", "-c", "@BOOT@", "${CLAUDE_PLUGIN_ROOT}/hooks/project_board.py"], "timeout": 15}
+        ]
       }
     ],
     "SessionStart": [

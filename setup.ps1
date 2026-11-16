@@ -417,6 +417,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $SkillDir 'hooks') | Out-Nu
 foreach ($n in @('guard.py', 'make_hooks.py', 'hooks.template.json')) {
     Copy-Item -LiteralPath (Join-Path $SrcSkill ('hooks\' + $n)) -Destination (Join-Path $SkillDir 'hooks') -Force
 }
+# 作業フォルダに対応するボードの行を見せ、更新し忘れを止めるフック（対応表 ~/.claude/today-board/projects.json は
+# 利用者のデータなので、setup は作りも書き換えもしない。対応表が無ければこのフックは何もしない）
+Copy-Item -LiteralPath (Join-Path $SrcSkill 'hooks\project_board.py') -Destination (Join-Path $SkillDir 'hooks') -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $SkillDir '.claude-plugin') | Out-Null
 Copy-Item -LiteralPath (Join-Path $SrcSkill '.claude-plugin\plugin.json') -Destination (Join-Path $SkillDir '.claude-plugin') -Force
 

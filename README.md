@@ -242,7 +242,8 @@ Python の場所が変わったら、1行目と3行目をやり直してくだ�
 │   ├── guard.py
 │   ├── hooks.json            ← make_hooks.py が作る
 │   ├── hooks.template.json
-│   └── make_hooks.py
+│   ├── make_hooks.py
+│   └── project_board.py
 └── scripts/
     └── board_edit.py
 ```
@@ -285,6 +286,7 @@ Deck は Claude Code の transcript（内部形式）を読み取り専用で監
 - `skill/LICENSE` — ライセンスの文面（MIT。リポジトリ直下の `LICENSE` と同じもの）。ボードの動作には使いません
 - `skill/scripts/board_edit.py` — `board.html` を書き換える専用のスクリプト（Python 3 標準ライブラリのみ）
 - `skill/hooks/guard.py`・`hooks.template.json`・`make_hooks.py`、`skill/.claude-plugin/plugin.json` — ボードの保護のフック。`setup.bat` が `make_hooks.py` で `hooks.json` を作り、Claude Code がスキルのフォルダをプラグインとして読み込んで登録します。フックは `board.html`・`.guard/`・`history/` に書きます（ボードを元に戻す・戻す前の版を `history/` に残す・控えと記録を `.guard/` に置く）
+- `skill/hooks/project_board.py` — 作業フォルダに対応するプロジェクトのボードの行を、依頼のたびに Claude に見せ、コミット・push をしたのにボードを更新していないターンを1回だけ止めるフック。対応表 `~/.claude/today-board/projects.json`（作業フォルダとボードでのプロジェクト名の組。setup は作りません）があるときだけ働き、無ければ何もしません。書き方は `skill/SKILL.md`「作業フォルダとプロジェクトの対応表」
 - `deck/deck_watcher.py` — 全セッションの transcript を差分監視し、ボード下部の予約領域（DECKマーカー間）にセッションカード（状態と、タスク一覧があれば進捗）を書き込む常駐ウォッチャー。ボードのファイルのうち予約領域の外に触れるのは「D&D 移動の反映」「完了表示を済チップに合わせて揃える整合」「日付が変わったときの今日のボードへの切り替え」「引き継いだボードの印を、手書きの部分が変わったときに外すこと（印の無い板に残った指紋も片付ける。D&D の反映では印の指紋を書き直す）」「進捗・更新時刻などヘッダの値の計算し直し」「欠けた予約領域の目印の足し直し（目印が2つとも無いときだけ。Deck が書いた部分が空行だけを挟んでひと続きに残っていればそれを囲み、間に別の行があれば足さない。Deck が書いた部分が1つも無ければ、ボードの末尾（`<footer>`）が1か所に決まるときだけその前に足す）」「古いテンプレートで作ったボードの、ボードのスクリプトの読み込み（末尾の1行）を先頭（head）へ移すこと（ボードの形が崩れておらず、その1行がファイルの最後にあり、見た目の指定（board.css）の読み込みが1つだけのときだけ。タスクの行・見出しは変えません）」だけで、タスクの文言は書き換えません（ボードのファイルの外では、前の日のボードと形が崩れる前の版を残す `history/`・ボードと同じフォルダの `state.json` の日付・`board.css` / `board.js` / `cat.png` の写し・ボードと同じフォルダの `.guard/`（ボードの手書き部分を書き換える前に残す書き込みの記録と、その形式の版を書いた `format.json`）と、`deck/` の `state.json`・`sound.json`・`watcher.log`、一時フォルダの多重起動防止のロックファイルに書きます）
 
 進捗が変わるたびに Claude が `board_edit.py` でボードを書き換え、開きっぱなしのブラウザタブが自動リロードで追随します。

@@ -1,4 +1,4 @@
 {
   "name": "today-board",
-  "description": "きょうのボード: Claude Code が board.html を board_edit.py を通さずに書き換えないよう止める・戻すフック"
+  "description": "きょうのボード: Claude Code が board.html を board_edit.py を通さずに書き換えないよう止める・戻すフックと、作業フォルダのプロジェクトのボードの行を見せ、コミット後の更新し忘れを止めるフック"
 }
